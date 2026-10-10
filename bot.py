@@ -11,10 +11,10 @@ except ImportError:
     cloudscraper = None
 
 # Carga la URL de la variable secreta configurada en GitHub Actions
-WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK", "")
+WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK", "").strip()
 
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "Accept-Language": "es-ES,es;q=0.9,en;q=0.8"
 }
@@ -54,7 +54,7 @@ def enviar_alerta_stock_inmediato(item):
         "embeds": [{
             "title": f"🟢 {item['titulo']}",
             "url": item['url'],
-            "color": 3066993, # Verde
+            "color": 3066993,  # Verde
             "fields": [
                 {"name": "Estado", "value": "🟢 CON STOCK DISPONIBLE", "inline": True},
                 {"name": "Tienda", "value": item['tienda'], "inline": True},
@@ -63,35 +63,36 @@ def enviar_alerta_stock_inmediato(item):
         }]
     }
     try:
-        requests.post(WEBHOOK_URL, json=payload, timeout=10)
+        res = requests.post(WEBHOOK_URL, json=payload, timeout=10)
+        print(f"Alerta enviada para {item['tienda']} -> HTTP {res.status_code}")
     except Exception as e:
         print(f"Error enviando alerta instantánea: {e}")
 
-def enviar_reporte_diario():
-    """Reporte consolidado diario con todos los links encontrados (con o sin stock)"""
+def enviar_reporte_programado(hora_label):
+    """Reporte consolidado con todos los productos encontrados"""
     if not hallazgos:
-        descripcion = "No se encontraron publicaciones activas coincidentes en las tiendas rastreadas hoy."
+        descripcion = "No se encontraron publicaciones activas coincidentes en las tiendas rastreadas."
     else:
         lineas = []
         for item in hallazgos:
             estado = "🟢 CON STOCK" if item['stock'] else "🔴 SIN STOCK"
-            lineas.append(f"• [{item['tienda']}] [{item['titulo']}]({item['url']}) - **{estado}**")
+            lineas.append(f"• **[{item['tienda']}]** [{item['titulo']}]({item['url']}) - **{estado}** (Precio: {item['precio']})")
         descripcion = "\n".join(lineas)
 
     payload = {
-        "content": "📊 **REPORTE DIARIO DE MONITOREO (13:00 HORA PERÚ)**",
+        "content": f"📊 **REPORTE DE ESTADO POKÉMON TCG 30TH ({hora_label} HORA PERÚ)**",
         "embeds": [{
-            "title": "Estado General de Productos Pokémon TCG 30th",
+            "title": "Consolidado de Tiendas Rastreadas",
             "description": descripcion,
-            "color": 3447003, # Azul
+            "color": 3447003,  # Azul
             "footer": {"text": f"Generado el {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} UTC"}
         }]
     }
     try:
-        requests.post(WEBHOOK_URL, json=payload, timeout=10)
-        print("Reporte diario enviado exitosamente a Discord.")
+        res = requests.post(WEBHOOK_URL, json=payload, timeout=10)
+        print(f"Reporte de las {hora_label} enviado exitosamente a Discord -> HTTP {res.status_code}")
     except Exception as e:
-        print(f"Error enviando reporte diario: {e}")
+        print(f"Error enviando reporte programado: {e}")
 
 # --- MÓDULOS DE RASTREO DE TIENDAS ---
 
@@ -108,15 +109,18 @@ def buscar_vtex(nombre, domain):
                     nombre_p = prod.get("productName", "")
                     if coincide_palabras_clave(nombre_p):
                         tiene_stock = False
+                        precio = "N/A"
                         for item in prod.get("items", []):
                             for seller in item.get("sellers", []):
                                 comm = seller.get("commertialOffer", {})
                                 if comm.get("AvailableQuantity", 0) > 0 and comm.get("IsAvailable", False):
                                     tiene_stock = True
+                                    if "Price" in comm:
+                                        precio = f"S/ {comm['Price']}"
                                     break
                         link_prod = prod.get("link", domain)
-                        print(f"[{nombre}] {nombre_p} | Stock: {tiene_stock}")
-                        registrar_producto(nombre, nombre_p, link_prod, tiene_stock)
+                        print(f"[{nombre}] {nombre_p} | Stock: {tiene_stock} | Precio: {precio}")
+                        registrar_producto(nombre, nombre_p, link_prod, tiene_stock, precio)
     except Exception as e:
         print(f"[{nombre}] Error: {e}")
 
@@ -130,13 +134,15 @@ def buscar_tailoy():
             soup = BeautifulSoup(res.text, "html.parser")
             for prod in soup.select(".product-item, .product-item-info"):
                 nombre_el = prod.select_one(".product-item-link")
+                precio_el = prod.select_one(".price")
                 if nombre_el:
                     nombre = nombre_el.get_text(strip=True)
                     link_directo = nombre_el.get("href", "")
+                    precio = precio_el.get_text(strip=True) if precio_el else "N/A"
                     if coincide_palabras_clave(nombre):
                         tiene_stock = "sin stock" not in prod.text.lower() and "agotado" not in prod.text.lower()
-                        print(f"[Tai Loy] {nombre} | Stock: {tiene_stock}")
-                        registrar_producto("Tai Loy", nombre, link_directo, tiene_stock)
+                        print(f"[Tai Loy] {nombre} | Stock: {tiene_stock} | Precio: {precio}")
+                        registrar_producto("Tai Loy", nombre, link_directo, tiene_stock, precio)
     except Exception as e:
         print(f"[Tai Loy] Error: {e}")
 
@@ -151,13 +157,15 @@ def buscar_phantom():
             for item in soup.select("li.product, div.product, article"):
                 titulo_el = item.select_one(".woocommerce-loop-product__title, .product-title, h2, h3")
                 link_el = item.select_one("a")
+                precio_el = item.select_one(".price, .amount")
                 if titulo_el and link_el:
                     titulo = titulo_el.get_text(strip=True)
                     link_directo = link_el.get("href", "")
+                    precio = precio_el.get_text(strip=True) if precio_el else "N/A"
                     if coincide_palabras_clave(titulo):
                         tiene_stock = "agotado" not in item.text.lower()
-                        print(f"[Phantom] {titulo} | Stock: {tiene_stock}")
-                        registrar_producto("Phantom", titulo, link_directo, tiene_stock)
+                        print(f"[Phantom] {titulo} | Stock: {tiene_stock} | Precio: {precio}")
+                        registrar_producto("Phantom", titulo, link_directo, tiene_stock, precio)
     except Exception as e:
         print(f"[Phantom] Error: {e}")
 
@@ -171,15 +179,24 @@ if __name__ == "__main__":
     buscar_tailoy()
     buscar_phantom()
     
-    # 2. Monitoreo continuo (cada 5 min): SOLO notifica si se detecta stock disponible
+    # 2. Alerta instantánea: SOLO notifica si se detecta stock disponible
+    stock_encontrado = False
     for item in hallazgos:
         if item["stock"]:
-            print(f"¡Atención! Stock encontrado en {item['tienda']}. Enviando alerta...")
+            stock_encontrado = True
+            print(f"¡Atención! Stock encontrado en {item['tienda']}. Enviando alerta instantánea...")
             enviar_alerta_stock_inmediato(item)
 
-    # 3. Reporte consolidado diario a las 13:00 (Hora Perú / 18:00 UTC)
-    if hora_actual.hour == 18 and hora_actual.minute < 5:
-        print("Enviando reporte diario consolidado a las 13:00 (Hora Perú)...")
-        enviar_reporte_diario()
+    if not stock_encontrado:
+        print("Sin novedades de stock en ninguna tienda. Escaneo finalizado en silencio.")
 
-    print("Escaneo finalizado.")
+    # 3. Reportes consolidados programados (3 veces al día Hora Perú)
+    # 08:00 AM PET = 13:00 UTC | 01:00 PM PET = 18:00 UTC | 08:00 PM PET = 01:00 UTC
+    if hora_actual.hour == 13 and hora_actual.minute < 5:
+        enviar_reporte_programado("08:00 AM")
+    elif hora_actual.hour == 18 and hora_actual.minute < 5:
+        enviar_reporte_programado("01:00 PM")
+    elif hora_actual.hour == 1 and hora_actual.minute < 5:
+        enviar_reporte_programado("08:00 PM")
+
+    print("Escaneo finalizado exitosamente.")
