@@ -1,5 +1,6 @@
 import os
 import time
+from datetime import datetime
 import requests
 import urllib.parse
 from bs4 import BeautifulSoup
@@ -9,8 +10,7 @@ try:
 except ImportError:
     cloudscraper = None
 
-# Carga la URL desde los Secrets de GitHub Actions
-WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK", "https://discord.com/api/webhooks/1558357066597539867/Q2JWn4-2j_5oaJ-fGYZNetTXKCHrkr5G8XFzIlBMHnXRchcc1_tXDgjbcBEU0EMPlgam")
+WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK", "")
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
@@ -25,6 +25,9 @@ TARGET_KEYWORDS = [
     ["cartas", "pokemon", "30"]
 ]
 
+# Lista para guardar todos los hallazgos en la ejecución
+hallazgos = []
+
 def coincide_palabras_clave(texto):
     if not texto:
         return False
@@ -34,51 +37,62 @@ def coincide_palabras_clave(texto):
             return True
     return False
 
-def enviar_alerta_discord(tienda, titulo, url_directa, tiene_stock, precio="N/A"):
-    estado_texto = "🟢 DISPONIBLE CON STOCK" if tiene_stock else "🔴 PUBLICADO PERO SIN STOCK"
-    color_embed = 3066993 if tiene_stock else 15158332
+def registrar_producto(tienda, titulo, url_directa, tiene_stock, precio="N/A"):
+    hallazgos.append({
+        "tienda": tienda,
+        "titulo": titulo,
+        "url": url_directa,
+        "stock": tiene_stock,
+        "precio": precio
+    })
 
-    fields = [
-        {"name": "Estado", "value": estado_texto, "inline": True},
-        {"name": "Tienda", "value": tienda, "inline": True}
-    ]
-    if precio != "N/A":
-        fields.append({"name": "Precio", "value": str(precio), "inline": True})
-
+def enviar_alerta_stock_inmediato(item):
+    """Envía alerta instantánea solo si hay stock"""
     payload = {
-        "content": f"📢 @everyone ¡Producto detectado en **{tienda.upper()}**!",
+        "content": f"🚨 **¡STOCK DETECTADO EN {item['tienda'].upper()}!** @everyone",
         "embeds": [{
-            "title": f"🔗 {titulo}",
-            "description": "Enlace directo al producto:",
-            "url": url_directa,
-            "color": color_embed,
-            "fields": fields
+            "title": f"🟢 {item['titulo']}",
+            "url": item['url'],
+            "color": 3066993, # Verde
+            "fields": [
+                {"name": "Estado", "value": "🟢 CON STOCK DISPONIBLE", "inline": True},
+                {"name": "Tienda", "value": item['tienda'], "inline": True},
+                {"name": "Precio", "value": str(item['precio']), "inline": True}
+            ]
         }]
     }
     try:
         requests.post(WEBHOOK_URL, json=payload, timeout=10)
     except Exception as e:
-        print(f"Error al enviar alerta a Discord: {e}")
+        print(f"Error enviando alerta instantánea: {e}")
 
-def buscar_mercadolibre():
-    print("\n--- [Mercado Libre Perú] ---")
-    url_prod = "https://www.mercadolibre.com.pe/cartas-pokemon-30-aniversarios-tcg-booster-bundle-ingles/up/MPEU5458163652"
+def enviar_reporte_diario():
+    """Envía un resumen de todos los links (con o sin stock) 1 vez al día"""
+    if not hallazgos:
+        descripcion = "No se encontraron publicaciones asociadas en las tiendas rastreadas hoy."
+    else:
+        lineas = []
+        for item in hallazgos:
+            estado = "🟢 CON STOCK" if item['stock'] else "🔴 SIN STOCK"
+            lineas.append(f"• [{item['tienda']}] [{item['titulo']}]({item['url']}) - **{estado}**")
+        descripcion = "\n".join(lineas)
+
+    payload = {
+        "content": "📊 **REPORTE DIARIO DE MONITOREO (1 VEZ AL DÍA)**",
+        "embeds": [{
+            "title": "Estado General de Productos Pokémon TCG 30th",
+            "description": descripcion,
+            "color": 3447003, # Azul
+            "footer": {"text": f"Generado el {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"}
+        }]
+    }
     try:
-        scraper = cloudscraper.create_scraper() if cloudscraper else requests
-        res = scraper.get(url_prod, headers=HEADERS, timeout=12)
-        if res.status_code == 200:
-            soup = BeautifulSoup(res.text, "html.parser")
-            titulo_el = soup.select_one("h1.ui-pdp-title")
-            titulo = titulo_el.get_text(strip=True) if titulo_el else "Cartas Pokemon 30 Aniversarios TCG Booster Bundle Inglés"
-            no_stock = "publicación pausada" in res.text.lower() or "sin stock" in res.text.lower()
-            precio_el = soup.select_one(".ui-pdp-price__second-line .andes-money-amount__fraction")
-            precio = f"S/ {precio_el.get_text(strip=True)}" if precio_el else "N/A"
-            print(f"[Mercado Libre] Encontrado: {titulo} | Stock: {not no_stock}")
-            enviar_alerta_discord("Mercado Libre Perú", titulo, url_prod, not no_stock, precio)
-        else:
-            print(f"[Mercado Libre] Estado HTTP: {res.status_code}")
+        requests.post(WEBHOOK_URL, json=payload, timeout=10)
+        print("Reporte diario enviado a Discord.")
     except Exception as e:
-        print(f"[Mercado Libre] Error: {e}")
+        print(f"Error enviando reporte diario: {e}")
+
+# --- RASTREADORES TIENDAS ---
 
 def buscar_vtex(nombre, domain):
     print(f"\n--- [{nombre}] ---")
@@ -100,29 +114,72 @@ def buscar_vtex(nombre, domain):
                                     tiene_stock = True
                                     break
                         link_prod = prod.get("link", domain)
-                        print(f"[{nombre}] Encontrado: {nombre_p} | Stock: {tiene_stock}")
-                        enviar_alerta_discord(nombre, nombre_p, link_prod, tiene_stock)
-        else:
-            print(f"[{nombre}] Estado HTTP: {res.status_code}")
+                        print(f"[{nombre}] {nombre_p} | Stock: {tiene_stock}")
+                        registrar_producto(nombre, nombre_p, link_prod, tiene_stock)
     except Exception as e:
         print(f"[{nombre}] Error: {e}")
 
+def buscar_tailoy():
+    print("\n--- [Tai Loy] ---")
+    url_search = "https://www.tailoy.com.pe/catalogsearch/result/?q=tcg+30+aniversario"
+    try:
+        scraper = cloudscraper.create_scraper() if cloudscraper else requests
+        res = scraper.get(url_search, headers=HEADERS, timeout=12)
+        if res.status_code == 200:
+            soup = BeautifulSoup(res.text, "html.parser")
+            for prod in soup.select(".product-item, .product-item-info"):
+                nombre_el = prod.select_one(".product-item-link")
+                if nombre_el:
+                    nombre = nombre_el.get_text(strip=True)
+                    link_directo = nombre_el.get("href", "")
+                    if coincide_palabras_clave(nombre):
+                        tiene_stock = "sin stock" not in prod.text.lower() and "agotado" not in prod.text.lower()
+                        print(f"[Tai Loy] {nombre} | Stock: {tiene_stock}")
+                        registrar_producto("Tai Loy", nombre, link_directo, tiene_stock)
+    except Exception as e:
+        print(f"[Tai Loy] Error: {e}")
+
+def buscar_phantom():
+    print("\n--- [Phantom] ---")
+    url_search = "https://phantom.pe/?s=tcg+30+aniversario&post_type=product"
+    try:
+        scraper = cloudscraper.create_scraper() if cloudscraper else requests
+        res = scraper.get(url_search, headers=HEADERS, timeout=12)
+        if res.status_code == 200:
+            soup = BeautifulSoup(res.text, "html.parser")
+            for item in soup.select("li.product, div.product, article"):
+                titulo_el = item.select_one(".woocommerce-loop-product__title, .product-title, h2, h3")
+                link_el = item.select_one("a")
+                if titulo_el and link_el:
+                    titulo = titulo_el.get_text(strip=True)
+                    link_directo = link_el.get("href", "")
+                    if coincide_palabras_clave(titulo):
+                        tiene_stock = "agotado" not in item.text.lower()
+                        print(f"[Phantom] {titulo} | Stock: {tiene_stock}")
+                        registrar_producto("Phantom", titulo, link_directo, tiene_stock)
+    except Exception as e:
+        print(f"[Phantom] Error: {e}")
+
 if __name__ == "__main__":
-    hora_actual = time.strftime('%Y-%m-%d %H:%M:%S')
-    print(f"Iniciando escaneo automático: {hora_actual}")
+    hora_actual = datetime.now()
+    print(f"Ejecutando rastreo: {hora_actual.strftime('%Y-%m-%d %H:%M:%S')}")
     
-    # 1. Ejecutar búsquedas
-    buscar_mercadolibre()
+    # 1. Rastrear tiendas
     buscar_vtex("Plaza Vea", "https://www.plazavea.com.pe")
     buscar_vtex("Oechsle", "https://www.oechsle.pe")
+    buscar_tailoy()
+    buscar_phantom()
     
-    # 2. Notificación fija en Discord para verificar que el Webhook responde
-    try:
-        requests.post(WEBHOOK_URL, json={
-            "content": f"🤖 **Rastreador GitHub Actions:** Escaneo ejecutado con éxito a las `{hora_actual}`. Sistema monitoreando activamente."
-        }, timeout=10)
-        print("Mensaje de estado enviado a Discord correctamente.")
-    except Exception as e:
-        print(f"Error al enviar ping a Discord: {e}")
-        
+    # 2. Notificaciones cada 5 minutos: SOLO si hay stock disponible
+    for item in hallazgos:
+        if item["stock"]:
+            print(f"¡Atención! Stock encontrado en {item['tienda']}. Enviando alerta...")
+            enviar_alerta_stock_inmediato(item)
+
+    # 3. Reporte completo 1 vez al día (Configurado a las 08:00 AM UTC - ajusta el número según prefieras)
+    # Ejemplo: Si la hora actual en la máquina es las 08 AM y los minutos están entre 0 y 5
+    if hora_actual.hour == 8 and hora_actual.minute < 5:
+        print("Enviando reporte diario consolidado...")
+        enviar_reporte_diario()
+
     print("Escaneo finalizado.")
