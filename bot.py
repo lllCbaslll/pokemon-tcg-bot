@@ -10,6 +10,7 @@ try:
 except ImportError:
     cloudscraper = None
 
+# Carga la URL de la variable secreta configurada en GitHub Actions
 WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK", "")
 
 HEADERS = {
@@ -25,7 +26,7 @@ TARGET_KEYWORDS = [
     ["cartas", "pokemon", "30"]
 ]
 
-# Lista para guardar todos los hallazgos en la ejecución
+# Estructura global para acumular los hallazgos durante el rastreo
 hallazgos = []
 
 def coincide_palabras_clave(texto):
@@ -47,7 +48,7 @@ def registrar_producto(tienda, titulo, url_directa, tiene_stock, precio="N/A"):
     })
 
 def enviar_alerta_stock_inmediato(item):
-    """Envía alerta instantánea solo si hay stock"""
+    """Notificación instantánea a Discord enviada únicamente cuando hay stock"""
     payload = {
         "content": f"🚨 **¡STOCK DETECTADO EN {item['tienda'].upper()}!** @everyone",
         "embeds": [{
@@ -67,9 +68,9 @@ def enviar_alerta_stock_inmediato(item):
         print(f"Error enviando alerta instantánea: {e}")
 
 def enviar_reporte_diario():
-    """Envía un resumen de todos los links (con o sin stock) 1 vez al día"""
+    """Reporte consolidado diario con todos los links encontrados (con o sin stock)"""
     if not hallazgos:
-        descripcion = "No se encontraron publicaciones asociadas en las tiendas rastreadas hoy."
+        descripcion = "No se encontraron publicaciones activas coincidentes en las tiendas rastreadas hoy."
     else:
         lineas = []
         for item in hallazgos:
@@ -78,21 +79,21 @@ def enviar_reporte_diario():
         descripcion = "\n".join(lineas)
 
     payload = {
-        "content": "📊 **REPORTE DIARIO DE MONITOREO (1 VEZ AL DÍA)**",
+        "content": "📊 **REPORTE DIARIO DE MONITOREO (13:00 HORA PERÚ)**",
         "embeds": [{
             "title": "Estado General de Productos Pokémon TCG 30th",
             "description": descripcion,
             "color": 3447003, # Azul
-            "footer": {"text": f"Generado el {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"}
+            "footer": {"text": f"Generado el {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} UTC"}
         }]
     }
     try:
         requests.post(WEBHOOK_URL, json=payload, timeout=10)
-        print("Reporte diario enviado a Discord.")
+        print("Reporte diario enviado exitosamente a Discord.")
     except Exception as e:
         print(f"Error enviando reporte diario: {e}")
 
-# --- RASTREADORES TIENDAS ---
+# --- MÓDULOS DE RASTREO DE TIENDAS ---
 
 def buscar_vtex(nombre, domain):
     print(f"\n--- [{nombre}] ---")
@@ -162,24 +163,13 @@ def buscar_phantom():
 
 if __name__ == "__main__":
     hora_actual = datetime.now()
-    print(f"Ejecutando rastreo: {hora_actual.strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"Ejecutando rastreo: {hora_actual.strftime('%Y-%m-%d %H:%M:%S')} UTC")
     
-    # 1. Rastrear tiendas
+    # 1. Rastrear tiendas activas
     buscar_vtex("Plaza Vea", "https://www.plazavea.com.pe")
     buscar_vtex("Oechsle", "https://www.oechsle.pe")
     buscar_tailoy()
     buscar_phantom()
     
-    # 2. Notificaciones cada 5 minutos: SOLO si hay stock disponible
-    for item in hallazgos:
-        if item["stock"]:
-            print(f"¡Atención! Stock encontrado en {item['tienda']}. Enviando alerta...")
-            enviar_alerta_stock_inmediato(item)
-
-    # 3. Reporte completo 1 vez al día (Configurado a las 08:00 AM UTC - ajusta el número según prefieras)
-    # Ejemplo: Si la hora actual en la máquina es las 08 AM y los minutos están entre 0 y 5
-    if hora_actual.hour == 8 and hora_actual.minute < 5:
-        print("Enviando reporte diario consolidado...")
-        enviar_reporte_diario()
-
-    print("Escaneo finalizado.")
+    # 2. Monitoreo continuo (cada 5 min): SOLO notifica si se detecta stock disponible
+    for item in hall
