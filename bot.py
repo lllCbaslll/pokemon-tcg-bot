@@ -9,7 +9,7 @@ try:
 except ImportError:
     cloudscraper = None
 
-# Lee el webhook guardado en los Secrets de GitHub Actions
+# Carga la URL desde los Secrets de GitHub Actions
 WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK", "https://discord.com/api/webhooks/1558357066597539867/Q2JWn4-2j_5oaJ-fGYZNetTXKCHrkr5G8XFzIlBMHnXRchcc1_tXDgjbcBEU0EMPlgam")
 
 HEADERS = {
@@ -26,6 +26,8 @@ TARGET_KEYWORDS = [
 ]
 
 def coincide_palabras_clave(texto):
+    if not texto:
+        return False
     texto_lower = texto.lower()
     for conjunto in TARGET_KEYWORDS:
         if all(kw in texto_lower for kw in conjunto):
@@ -44,7 +46,7 @@ def enviar_alerta_discord(tienda, titulo, url_directa, tiene_stock, precio="N/A"
         fields.append({"name": "Precio", "value": str(precio), "inline": True})
 
     payload = {
-        "content": f"📢 @everyone ¡Notificación de Rastreo Automatizado 24/7 en **{tienda.upper()}**!",
+        "content": f"📢 @everyone ¡Producto detectado en **{tienda.upper()}**!",
         "embeds": [{
             "title": f"🔗 {titulo}",
             "description": "Enlace directo al producto:",
@@ -56,7 +58,7 @@ def enviar_alerta_discord(tienda, titulo, url_directa, tiene_stock, precio="N/A"
     try:
         requests.post(WEBHOOK_URL, json=payload, timeout=10)
     except Exception as e:
-        print(f"Error al enviar a Discord: {e}")
+        print(f"Error al enviar alerta a Discord: {e}")
 
 def buscar_mercadolibre():
     print("\n--- [Mercado Libre Perú] ---")
@@ -71,9 +73,12 @@ def buscar_mercadolibre():
             no_stock = "publicación pausada" in res.text.lower() or "sin stock" in res.text.lower()
             precio_el = soup.select_one(".ui-pdp-price__second-line .andes-money-amount__fraction")
             precio = f"S/ {precio_el.get_text(strip=True)}" if precio_el else "N/A"
+            print(f"[Mercado Libre] Encontrado: {titulo} | Stock: {not no_stock}")
             enviar_alerta_discord("Mercado Libre Perú", titulo, url_prod, not no_stock, precio)
+        else:
+            print(f"[Mercado Libre] Estado HTTP: {res.status_code}")
     except Exception as e:
-        print(f"Error ML: {e}")
+        print(f"[Mercado Libre] Error: {e}")
 
 def buscar_vtex(nombre, domain):
     print(f"\n--- [{nombre}] ---")
@@ -82,30 +87,42 @@ def buscar_vtex(nombre, domain):
     try:
         res = requests.get(api_url, headers=HEADERS, timeout=10)
         if res.status_code in [200, 206]:
-            for prod in res.json():
-                nombre_p = prod.get("productName", "")
-                if coincide_palabras_clave(nombre_p):
-                    tiene_stock = any(
-                        comm.get("AvailableQuantity", 0) > 0 and comm.get("IsAvailable", False)
-                        for item in prod.get("items", [])
-                        for seller in item.get("sellers", [])
-                        for comm in [seller.get("commertialOffer", {})]
-                    )
-                    enviar_alerta_discord(nombre, nombre_p, prod.get("link", domain), tiene_stock)
+            productos = res.json()
+            if isinstance(productos, list):
+                for prod in productos:
+                    nombre_p = prod.get("productName", "")
+                    if coincide_palabras_clave(nombre_p):
+                        tiene_stock = False
+                        for item in prod.get("items", []):
+                            for seller in item.get("sellers", []):
+                                comm = seller.get("commertialOffer", {})
+                                if comm.get("AvailableQuantity", 0) > 0 and comm.get("IsAvailable", False):
+                                    tiene_stock = True
+                                    break
+                        link_prod = prod.get("link", domain)
+                        print(f"[{nombre}] Encontrado: {nombre_p} | Stock: {tiene_stock}")
+                        enviar_alerta_discord(nombre, nombre_p, link_prod, tiene_stock)
+        else:
+            print(f"[{nombre}] Estado HTTP: {res.status_code}")
     except Exception as e:
-        print(f"Error VTEX {nombre}: {e}")
+        print(f"[{nombre}] Error: {e}")
 
 if __name__ == "__main__":
-    hora = time.strftime('%Y-%m-%d %H:%M:%S')
-    print(f"Iniciando escaneo único a las {hora}")
+    hora_actual = time.strftime('%Y-%m-%d %H:%M:%S')
+    print(f"Iniciando escaneo automático: {hora_actual}")
     
+    # 1. Ejecutar búsquedas
     buscar_mercadolibre()
     buscar_vtex("Plaza Vea", "https://www.plazavea.com.pe")
     buscar_vtex("Oechsle", "https://www.oechsle.pe")
     
-    # Notificación de vida útil en Discord para confirmar el flujo
-    requests.post(WEBHOOK_URL, json={
-        "content": f"🤖 **Rastreador GitHub Actions:** Escaneo ejecutado con éxito a las `{hora}` (Lima). Sistema monitoreando activa y automáticamente."
-    })
-    
+    # 2. Notificación fija en Discord para verificar que el Webhook responde
+    try:
+        requests.post(WEBHOOK_URL, json={
+            "content": f"🤖 **Rastreador GitHub Actions:** Escaneo ejecutado con éxito a las `{hora_actual}`. Sistema monitoreando activamente."
+        }, timeout=10)
+        print("Mensaje de estado enviado a Discord correctamente.")
+    except Exception as e:
+        print(f"Error al enviar ping a Discord: {e}")
+        
     print("Escaneo finalizado.")
