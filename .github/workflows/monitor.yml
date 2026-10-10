@@ -1,0 +1,29 @@
+name: Monitor Pokemon TCG 24/7
+
+on:
+  schedule:
+    # Se ejecuta cada 15 minutos en la nube
+    - cron: '*/15 * * * *'
+  workflow_dispatch: # Permite probarlo manualmente cuando quieras
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Descargar codigo
+        uses: actions/checkout@v4
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Instalar librerias
+        run: |
+          pip install requests cloudscraper beautifulsoup4
+
+      - name: Ejecutar Rastreador
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+        run: python bot.py
