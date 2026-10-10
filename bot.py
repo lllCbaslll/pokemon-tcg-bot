@@ -96,8 +96,16 @@ def buscar_vtex(nombre, domain):
         print(f"Error VTEX {nombre}: {e}")
 
 if __name__ == "__main__":
-    print(f"Iniciando escaneo único a las {time.strftime('%Y-%m-%d %H:%M:%S')}")
+    hora = time.strftime('%Y-%m-%d %H:%M:%S')
+    print(f"Iniciando escaneo único a las {hora}")
+    
     buscar_mercadolibre()
     buscar_vtex("Plaza Vea", "https://www.plazavea.com.pe")
     buscar_vtex("Oechsle", "https://www.oechsle.pe")
+    
+    # Notificación de vida útil en Discord para confirmar el flujo
+    requests.post(WEBHOOK_URL, json={
+        "content": f"🤖 **Rastreador GitHub Actions:** Escaneo ejecutado con éxito a las `{hora}` (Lima). Sistema monitoreando activa y automáticamente."
+    })
+    
     print("Escaneo finalizado.")
