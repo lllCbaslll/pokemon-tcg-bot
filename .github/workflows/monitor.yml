@@ -2,9 +2,9 @@ name: Monitor Pokemon TCG 24/7
 
 on:
   schedule:
-    # Se ejecuta cada 15 minutos en la nube
-    - cron: '*/15 * * * *'
-  workflow_dispatch: # Permite probarlo manualmente cuando quieras
+    # Se ejecuta cada 5 minutos en la nube
+    - cron: '*/5 * * * *'
+  workflow_dispatch: # Permite ejecución manual si lo deseas
 
 jobs:
   run-bot:
