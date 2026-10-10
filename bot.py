@@ -172,4 +172,14 @@ if __name__ == "__main__":
     buscar_phantom()
     
     # 2. Monitoreo continuo (cada 5 min): SOLO notifica si se detecta stock disponible
-    for item in hall
+    for item in hallazgos:
+        if item["stock"]:
+            print(f"¡Atención! Stock encontrado en {item['tienda']}. Enviando alerta...")
+            enviar_alerta_stock_inmediato(item)
+
+    # 3. Reporte consolidado diario a las 13:00 (Hora Perú / 18:00 UTC)
+    if hora_actual.hour == 18 and hora_actual.minute < 5:
+        print("Enviando reporte diario consolidado a las 13:00 (Hora Perú)...")
+        enviar_reporte_diario()
+
+    print("Escaneo finalizado.")
