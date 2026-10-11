@@ -85,7 +85,7 @@ def enviar_reporte_programado(hora_label):
             "title": "Consolidado de Tiendas Rastreadas",
             "description": descripcion,
             "color": 3447003,  # Azul
-            "footer": {"text": f"Generado el {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} UTC"}
+            "footer": {"text": f"Generado el {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC"}
         }]
     }
     try:
@@ -170,7 +170,7 @@ def buscar_phantom():
         print(f"[Phantom] Error: {e}")
 
 if __name__ == "__main__":
-    hora_actual = datetime.now()
+    hora_actual = datetime.utcnow()
     print(f"Ejecutando rastreo: {hora_actual.strftime('%Y-%m-%d %H:%M:%S')} UTC")
     
     # 1. Rastrear tiendas activas
@@ -190,13 +190,16 @@ if __name__ == "__main__":
     if not stock_encontrado:
         print("Sin novedades de stock en ninguna tienda. Escaneo finalizado en silencio.")
 
-    # 3. Reportes consolidados programados (3 veces al día Hora Perú)
-    # 08:00 AM PET = 13:00 UTC | 01:00 PM PET = 18:00 UTC | 08:00 PM PET = 01:00 UTC
-    if hora_actual.hour == 13 and hora_actual.minute < 5:
-        enviar_reporte_programado("08:00 AM")
-    elif hora_actual.hour == 18 and hora_actual.minute < 5:
-        enviar_reporte_programado("01:00 PM")
-    elif hora_actual.hour == 1 and hora_actual.minute < 5:
-        enviar_reporte_programado("08:00 PM")
+    # 3. Reportes consolidados programados (4 veces al día - Hora Perú UTC-5)
+    # Se amplía la tolerancia a los primeros 30 min de la hora para absorber demoras de GitHub Actions.
+    if hora_actual.minute < 30:
+        if hora_actual.hour == 13:      # 08:00 AM PET
+            enviar_reporte_programado("08:00 AM")
+        elif hora_actual.hour == 17:    # 12:00 PM PET
+            enviar_reporte_programado("12:00 PM")
+        elif hora_actual.hour == 21:    # 04:00 PM PET
+            enviar_reporte_programado("04:00 PM")
+        elif hora_actual.hour == 1:     # 08:00 PM PET
+            enviar_reporte_programado("08:00 PM")
 
     print("Escaneo finalizado exitosamente.")
