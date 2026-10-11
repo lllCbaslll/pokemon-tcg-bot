@@ -20,7 +20,6 @@ HEADERS = {
     "Accept-Language": "es-ES,es;q=0.9,en;q=0.8"
 }
 
-# --- LISTAS DE PALABRAS CLAVE ---
 POKEMON_EXCLUIDAS = [
     "español", "espanol", "spanish",
     "venusaur", "charizard", "mimikyu", "garchomp", "bellibolt",
@@ -42,16 +41,10 @@ def coincide_pokemon(texto):
     if not texto:
         return False
     txt = texto.lower()
-    
-    # 1. Descarte estricto
     if any(exc in txt for exc in POKEMON_EXCLUIDAS):
         return False
-    
-    # 2. Validación de obligatoria
     if not any(ob in txt for ob in POKEMON_OBLIGATORIAS):
         return False
-    
-    # 3. Validación de secundaria
     return any(sec in txt for sec in POKEMON_SECUNDARIAS)
 
 def registrar_producto(tienda, titulo, url_directa, tiene_stock, precio="N/A", sku_id=None):
@@ -67,12 +60,13 @@ def registrar_producto(tienda, titulo, url_directa, tiene_stock, precio="N/A", s
     })
 
 def enviar_alerta_producto(item):
+    """Notificación instantánea SOLO cuando hay stock"""
     if not WEBHOOK_URL:
         print("ERROR CRÍTICO: Webhook de Pokémon no configurado.")
         return
 
-    estado_txt = "🟢 CON STOCK DISPONIBLE" if item['stock'] else "🔴 SIN STOCK / AGOTADO"
-    color_embed = 3066993 if item['stock'] else 15158332
+    estado_txt = "🟢 CON STOCK DISPONIBLE"
+    color_embed = 3066993  # Verde
 
     url_compra_directa = item['url']
     tienda_lower = item['tienda'].lower()
@@ -98,7 +92,7 @@ def enviar_alerta_producto(item):
         })
 
     payload = {
-        "content": f"📢 **PRODUCTO POKÉMON DETECTADO EN {item['tienda'].upper()}**",
+        "content": f"🚨 **STOCK DETECTADO EN {item['tienda'].upper()}**",
         "embeds": [{
             "title": f"{item['titulo']}",
             "url": item['url'],
@@ -113,6 +107,7 @@ def enviar_alerta_producto(item):
         print(f"Error enviando alerta: {e}")
 
 def enviar_reporte_programado(hora_label):
+    """Reporte consolidado de los 4 cortes diarios (incluye CON y SIN stock)"""
     if not WEBHOOK_URL:
         return
 
@@ -272,14 +267,17 @@ if __name__ == "__main__":
     buscar_tailoy()
     buscar_phantom()
     
-    if hallazgos:
-        print(f"\n--- Resumen de Productos Encontrados ({len(hallazgos)}) ---")
-        for item in hallazgos:
-            print(f"[{item['tienda']}] {item['titulo']} | Stock: {item['stock']} | Precio: {item['precio']}")
+    # 1. Alertas instantáneas: SOLO si el producto TIENE stock
+    productos_con_stock = [p for p in hallazgos if p['stock']]
+    if productos_con_stock:
+        print(f"\n--- Enviando Alertas Instantáneas para Productos con Stock ({len(productos_con_stock)}) ---")
+        for item in productos_con_stock:
             enviar_alerta_producto(item)
     else:
-        print("No se encontró ningún producto coincidente en el escaneo actual.")
+        print("\nNo hay productos con stock para alertar de forma instantánea.")
 
+    # 2. Reportes consolidados programados (4 veces al día - PET / UTC-5)
+    # Incluye el estado de TODOS los productos (con y sin stock)
     if hora_actual.minute < 20:
         if hora_actual.hour == 13:      # 08:00 AM PET (13:00 UTC)
             enviar_reporte_programado("08:00 AM")
