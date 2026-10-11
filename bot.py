@@ -1,4 +1,5 @@
 import os
+import re
 import time
 from datetime import datetime, timezone
 import requests
@@ -10,7 +11,6 @@ try:
 except ImportError:
     cloudscraper = None
 
-# Configura la variable de entorno DISCORD_WEBHOOK_POKEMON o usa el fallback directo
 DEFAULT_WEBHOOK = "https://discord.com/api/webhooks/1558357066597539867/Q2JWn4-2j_5oaJ-fGYZNetTXKCHrkr5G8XFzIlBMHnXRchcc1_tXDgjbcBEU0EMPlgam"
 WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_POKEMON", DEFAULT_WEBHOOK).strip()
 
@@ -20,14 +20,16 @@ HEADERS = {
     "Accept-Language": "es-ES,es;q=0.9,en;q=0.8"
 }
 
-PALABRAS_EXCLUIDAS = [
+# --- LISTAS DE PALABRAS CLAVE ---
+POKEMON_EXCLUIDAS = [
     "español", "espanol", "spanish",
     "venusaur", "charizard", "mimikyu", "garchomp", "bellibolt",
     "eevee", "chaos rising", "portafolio", "klara", "greninja"
 ]
 
-PALABRAS_OBLIGATORIAS = ["pokemon", "pokémon", "tcg", "colección", "coleccion"]
-PALABRAS_SECUNDARIAS = [
+POKEMON_OBLIGATORIAS = ["pokemon", "pokémon", "tcg", "colección", "coleccion"]
+
+POKEMON_SECUNDARIAS = [
     "30", "30th", "30a", "30.º", "30º", 
     "celebracion", "celebración", "celebration", "anniversary", "aniversario", 
     "booster", "bundle", "trainer", "etb", "ultra", "premium", "ingles", "inglés", "en inglés",
@@ -40,13 +42,19 @@ def coincide_pokemon(texto):
     if not texto:
         return False
     txt = texto.lower()
-    if any(exc in txt for exc in PALABRAS_EXCLUIDAS):
+    
+    # 1. Descarte estricto
+    if any(exc in txt for exc in POKEMON_EXCLUIDAS):
         return False
-    if not any(ob in txt for ob in PALABRAS_OBLIGATORIAS):
+    
+    # 2. Validación de obligatoria
+    if not any(ob in txt for ob in POKEMON_OBLIGATORIAS):
         return False
-    return any(sec in txt for sec in PALABRAS_SECUNDARIAS)
+    
+    # 3. Validación de secundaria
+    return any(sec in txt for sec in POKEMON_SECUNDARIAS)
 
-def registrar_producto(tienda, titulo, url_directa, tiene_stock, precio="N/A"):
+def registrar_producto(tienda, titulo, url_directa, tiene_stock, precio="N/A", sku_id=None):
     if any(item['url'] == url_directa for item in hallazgos):
         return
     hallazgos.append({
@@ -54,7 +62,8 @@ def registrar_producto(tienda, titulo, url_directa, tiene_stock, precio="N/A"):
         "titulo": titulo,
         "url": url_directa,
         "stock": tiene_stock,
-        "precio": precio
+        "precio": precio,
+        "sku_id": sku_id
     })
 
 def enviar_alerta_producto(item):
@@ -65,17 +74,36 @@ def enviar_alerta_producto(item):
     estado_txt = "🟢 CON STOCK DISPONIBLE" if item['stock'] else "🔴 SIN STOCK / AGOTADO"
     color_embed = 3066993 if item['stock'] else 15158332
 
+    url_compra_directa = item['url']
+    tienda_lower = item['tienda'].lower()
+
+    if "plaza vea" in tienda_lower:
+        sku = item.get('sku_id') or "20711636"
+        url_compra_directa = f"https://www.plazavea.com.pe/checkout/cart/add?sku={sku}&qty=1&seller=1"
+    elif "oechsle" in tienda_lower and item.get('sku_id'):
+        sku = item.get('sku_id')
+        url_compra_directa = f"https://www.oechsle.pe/checkout/cart/add?sku={sku}&qty=1&seller=1"
+
+    fields = [
+        {"name": "Estado", "value": estado_txt, "inline": True},
+        {"name": "Tienda", "value": item['tienda'], "inline": True},
+        {"name": "Precio", "value": str(item['precio']), "inline": True}
+    ]
+
+    if "plaza vea" in tienda_lower or "oechsle" in tienda_lower:
+        fields.append({
+            "name": "🛒 Express Checkout", 
+            "value": f"[Añadir al Carrito e Ir a Pagar]({url_compra_directa})", 
+            "inline": False
+        })
+
     payload = {
         "content": f"📢 **PRODUCTO POKÉMON DETECTADO EN {item['tienda'].upper()}**",
         "embeds": [{
             "title": f"{item['titulo']}",
             "url": item['url'],
             "color": color_embed,
-            "fields": [
-                {"name": "Estado", "value": estado_txt, "inline": True},
-                {"name": "Tienda", "value": item['tienda'], "inline": True},
-                {"name": "Precio", "value": str(item['precio']), "inline": True}
-            ]
+            "fields": fields
         }]
     }
     try:
@@ -115,6 +143,8 @@ def enviar_reporte_programado(hora_label):
     except Exception as e:
         print(f"Error enviando reporte programado: {e}")
 
+# --- MÓDULOS DE RASTREO ---
+
 def buscar_vtex(nombre, domain):
     print(f"\n--- [{nombre}] ---")
     queries = [
@@ -136,7 +166,13 @@ def buscar_vtex(nombre, domain):
                         if coincide_pokemon(nombre_p):
                             tiene_stock = False
                             precio = "N/A"
-                            for item in prod.get("items", []):
+                            sku_id = None
+                            
+                            items = prod.get("items", [])
+                            if items:
+                                sku_id = items[0].get("itemId")
+
+                            for item in items:
                                 for seller in item.get("sellers", []):
                                     comm = seller.get("commertialOffer", {})
                                     if comm.get("AvailableQuantity", 0) > 0 and comm.get("IsAvailable", False):
@@ -145,8 +181,8 @@ def buscar_vtex(nombre, domain):
                                             precio = f"S/ {comm['Price']}"
                                         break
                             link_prod = prod.get("link", domain)
-                            print(f"[{nombre}] {nombre_p} | Stock: {tiene_stock} | Precio: {precio}")
-                            registrar_producto(nombre, nombre_p, link_prod, tiene_stock, precio)
+                            print(f"[{nombre}] {nombre_p} | Stock: {tiene_stock} | Precio: {precio} | SKU: {sku_id}")
+                            registrar_producto(nombre, nombre_p, link_prod, tiene_stock, precio, sku_id)
         except Exception as e:
             print(f"[{nombre}] Error en búsqueda '{q}': {e}")
 
@@ -166,7 +202,10 @@ def buscar_vtex(nombre, domain):
                         if coincide_pokemon(nombre_p):
                             tiene_stock = False
                             precio = "N/A"
-                            for item in prod.get("items", []):
+                            items = prod.get("items", [])
+                            sku_id = items[0].get("itemId") if items else prod_id
+
+                            for item in items:
                                 for seller in item.get("sellers", []):
                                     comm = seller.get("commertialOffer", {})
                                     if comm.get("AvailableQuantity", 0) > 0 and comm.get("IsAvailable", False):
@@ -174,8 +213,8 @@ def buscar_vtex(nombre, domain):
                                         if "Price" in comm:
                                             precio = f"S/ {comm['Price']}"
                                         break
-                            print(f"[{nombre} DIRECTO] {nombre_p} | Stock: {tiene_stock} | Precio: {precio}")
-                            registrar_producto(nombre, nombre_p, link_directo, tiene_stock, precio)
+                            print(f"[{nombre} DIRECTO] {nombre_p} | Stock: {tiene_stock} | Precio: {precio} | SKU: {sku_id}")
+                            registrar_producto(nombre, nombre_p, link_directo, tiene_stock, precio, sku_id)
             except Exception as e:
                 print(f"[{nombre} DIRECTO] Error consultando ID {prod_id}: {e}")
 
