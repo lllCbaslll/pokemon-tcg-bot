@@ -10,23 +10,20 @@ try:
 except ImportError:
     cloudscraper = None
 
-# Webhook configurado con fallback directo
+# Configura la variable de entorno DISCORD_WEBHOOK_POKEMON o usa el fallback directo
 DEFAULT_WEBHOOK = "https://discord.com/api/webhooks/1558357066597539867/Q2JWn4-2j_5oaJ-fGYZNetTXKCHrkr5G8XFzIlBMHnXRchcc1_tXDgjbcBEU0EMPlgam"
-WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK", DEFAULT_WEBHOOK).strip()
+WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_POKEMON", DEFAULT_WEBHOOK).strip()
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept": "application/json, text/plain, */*",
     "Accept-Language": "es-ES,es;q=0.9,en;q=0.8"
 }
 
-# Descarte estricto de productos etiquetados en español o términos/Pokémon excluidos
 PALABRAS_EXCLUIDAS = [
     "español", "espanol", "spanish",
     "venusaur", "charizard", "mimikyu", "garchomp", "bellibolt",
-    "eevee", "chaos rising",
-    "portafolio",
-    "klara", "greninja"
+    "eevee", "chaos rising", "portafolio", "klara", "greninja"
 ]
 
 PALABRAS_OBLIGATORIAS = ["pokemon", "pokémon", "tcg", "colección", "coleccion"]
@@ -39,20 +36,15 @@ PALABRAS_SECUNDARIAS = [
 
 hallazgos = []
 
-def coincide_palabras_clave(texto):
+def coincide_pokemon(texto):
     if not texto:
         return False
-    texto_lower = texto.lower()
-    
-    # Excluir productos en español, portafolios o con términos no deseados
-    if any(exc in texto_lower for exc in PALABRAS_EXCLUIDAS):
+    txt = texto.lower()
+    if any(exc in txt for exc in PALABRAS_EXCLUIDAS):
         return False
-    
-    tiene_obligatoria = any(ob in texto_lower for ob in PALABRAS_OBLIGATORIAS)
-    if not tiene_obligatoria:
+    if not any(ob in txt for ob in PALABRAS_OBLIGATORIAS):
         return False
-    
-    return any(sec in texto_lower for sec in PALABRAS_SECUNDARIAS)
+    return any(sec in txt for sec in PALABRAS_SECUNDARIAS)
 
 def registrar_producto(tienda, titulo, url_directa, tiene_stock, precio="N/A"):
     if any(item['url'] == url_directa for item in hallazgos):
@@ -66,16 +58,15 @@ def registrar_producto(tienda, titulo, url_directa, tiene_stock, precio="N/A"):
     })
 
 def enviar_alerta_producto(item):
-    """Notificación instantánea a Discord enviada para cada producto detectado (con o sin stock)"""
     if not WEBHOOK_URL:
-        print("ERROR CRÍTICO: La URL del Webhook de Discord no se encuentra configurada.")
+        print("ERROR CRÍTICO: Webhook de Pokémon no configurado.")
         return
 
     estado_txt = "🟢 CON STOCK DISPONIBLE" if item['stock'] else "🔴 SIN STOCK / AGOTADO"
-    color_embed = 3066993 if item['stock'] else 15158332 # Verde o Rojo
+    color_embed = 3066993 if item['stock'] else 15158332
 
     payload = {
-        "content": f"📢 **PRODUCTO DETECTADO EN {item['tienda'].upper()}**",
+        "content": f"📢 **PRODUCTO POKÉMON DETECTADO EN {item['tienda'].upper()}**",
         "embeds": [{
             "title": f"{item['titulo']}",
             "url": item['url'],
@@ -94,39 +85,35 @@ def enviar_alerta_producto(item):
         print(f"Error enviando alerta: {e}")
 
 def enviar_reporte_programado(hora_label):
-    """Reporte consolidado con todos los productos encontrados (con y sin stock)"""
     if not WEBHOOK_URL:
-        print("ERROR CRÍTICO: La URL del Webhook de Discord no se encuentra configurada.")
         return
 
     if not hallazgos:
-        descripcion = "No se encontraron publicaciones activas en inglés en las tiendas rastreadas."
+        descripcion = "No se encontraron publicaciones activas de Pokémon TCG en las tiendas rastreadas."
     else:
         lineas = []
         for item in hallazgos:
             estado = "🟢 CON STOCK" if item['stock'] else "🔴 SIN STOCK"
             lineas.append(f"• **[{item['tienda']}]** [{item['titulo']}]({item['url']}) - **{estado}** (Precio: {item['precio']})")
         
-        descripcion = "\n".join(lineas[:25]) 
+        descripcion = "\n".join(lineas[:25])
         if len(lineas) > 25:
             descripcion += f"\n\n*...y {len(lineas) - 25} publicaciones más.*"
 
     payload = {
         "content": f"📊 **REPORTE DE ESTADO POKÉMON TCG 30TH ({hora_label} HORA PERÚ)**",
         "embeds": [{
-            "title": "Consolidado de Tiendas Rastreadas (Inglés - Con y Sin Stock)",
+            "title": "Consolidado de Tiendas Rastreadas (Con y Sin Stock)",
             "description": descripcion,
-            "color": 3447003,  # Azul
+            "color": 3447003,
             "footer": {"text": f"Generado el {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC"}
         }]
     }
     try:
         res = requests.post(WEBHOOK_URL, json=payload, timeout=10)
-        print(f"Reporte de las {hora_label} enviado exitosamente a Discord -> HTTP {res.status_code}")
+        print(f"Reporte de las {hora_label} enviado exitosamente -> HTTP {res.status_code}")
     except Exception as e:
         print(f"Error enviando reporte programado: {e}")
-
-# --- MÓDULOS DE RASTREO DE TIENDAS ---
 
 def buscar_vtex(nombre, domain):
     print(f"\n--- [{nombre}] ---")
@@ -146,7 +133,7 @@ def buscar_vtex(nombre, domain):
                 if isinstance(productos, list):
                     for prod in productos:
                         nombre_p = prod.get("productName", "")
-                        if coincide_palabras_clave(nombre_p):
+                        if coincide_pokemon(nombre_p):
                             tiene_stock = False
                             precio = "N/A"
                             for item in prod.get("items", []):
@@ -176,7 +163,7 @@ def buscar_vtex(nombre, domain):
                     if isinstance(prods, list) and len(prods) > 0:
                         prod = prods[0]
                         nombre_p = prod.get("productName", titulo_defecto)
-                        if coincide_palabras_clave(nombre_p):
+                        if coincide_pokemon(nombre_p):
                             tiene_stock = False
                             precio = "N/A"
                             for item in prod.get("items", []):
@@ -207,7 +194,7 @@ def buscar_tailoy():
                     nombre = nombre_el.get_text(strip=True)
                     link_directo = nombre_el.get("href", "")
                     precio = precio_el.get_text(strip=True) if precio_el else "N/A"
-                    if coincide_palabras_clave(nombre):
+                    if coincide_pokemon(nombre):
                         tiene_stock = "sin stock" not in prod.text.lower() and "agotado" not in prod.text.lower()
                         print(f"[Tai Loy] {nombre} | Stock: {tiene_stock} | Precio: {precio}")
                         registrar_producto("Tai Loy", nombre, link_directo, tiene_stock, precio)
@@ -230,7 +217,7 @@ def buscar_phantom():
                     titulo = titulo_el.get_text(strip=True)
                     link_directo = link_el.get("href", "")
                     precio = precio_el.get_text(strip=True) if precio_el else "N/A"
-                    if coincide_palabras_clave(titulo):
+                    if coincide_pokemon(titulo):
                         tiene_stock = "agotado" not in item.text.lower()
                         print(f"[Phantom] {titulo} | Stock: {tiene_stock} | Precio: {precio}")
                         registrar_producto("Phantom", titulo, link_directo, tiene_stock, precio)
@@ -239,24 +226,21 @@ def buscar_phantom():
 
 if __name__ == "__main__":
     hora_actual = datetime.now(timezone.utc)
-    print(f"Ejecutando rastreo: {hora_actual.strftime('%Y-%m-%d %H:%M:%S')} UTC")
+    print(f"Ejecutando rastreo Pokémon TCG: {hora_actual.strftime('%Y-%m-%d %H:%M:%S')} UTC")
     
-    # 1. Rastrear tiendas activas
     buscar_vtex("Plaza Vea", "https://www.plazavea.com.pe")
     buscar_vtex("Oechsle", "https://www.oechsle.pe")
     buscar_tailoy()
     buscar_phantom()
     
-    # 2. Mostrar/Alertar TODOS los productos encontrados en las tiendas
     if hallazgos:
         print(f"\n--- Resumen de Productos Encontrados ({len(hallazgos)}) ---")
         for item in hallazgos:
             print(f"[{item['tienda']}] {item['titulo']} | Stock: {item['stock']} | Precio: {item['precio']}")
             enviar_alerta_producto(item)
     else:
-        print("No se encontró ningún producto coincidente.")
+        print("No se encontró ningún producto coincidente en el escaneo actual.")
 
-    # 3. Reportes consolidados programados (4 veces al día - Hora Perú UTC-5)
     if hora_actual.minute < 20:
         if hora_actual.hour == 13:      # 08:00 AM PET (13:00 UTC)
             enviar_reporte_programado("08:00 AM")
