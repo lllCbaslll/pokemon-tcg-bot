@@ -191,15 +191,15 @@ if __name__ == "__main__":
         print("Sin novedades de stock en ninguna tienda. Escaneo finalizado en silencio.")
 
     # 3. Reportes consolidados programados (4 veces al día - Hora Perú UTC-5)
-    # Se amplía la tolerancia a los primeros 30 min de la hora para absorber demoras de GitHub Actions.
-    if hora_actual.minute < 30:
-        if hora_actual.hour == 13:      # 08:00 AM PET
+    # Rango de tolerancia de 20 minutos para absorber la latencia del runner de GitHub
+    if hora_actual.minute < 20:
+        if hora_actual.hour == 13:      # 08:00 AM PET (13:00 UTC)
             enviar_reporte_programado("08:00 AM")
-        elif hora_actual.hour == 17:    # 12:00 PM PET
+        elif hora_actual.hour == 17:    # 12:00 PM PET (17:00 UTC)
             enviar_reporte_programado("12:00 PM")
-        elif hora_actual.hour == 21:    # 04:00 PM PET
+        elif hora_actual.hour == 21:    # 04:00 PM PET (21:00 UTC)
             enviar_reporte_programado("04:00 PM")
-        elif hora_actual.hour == 1:     # 08:00 PM PET
+        elif hora_actual.hour == 1:     # 08:00 PM PET (01:00 UTC)
             enviar_reporte_programado("08:00 PM")
 
     print("Escaneo finalizado exitosamente.")
