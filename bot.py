@@ -10,7 +10,6 @@ try:
 except ImportError:
     cloudscraper = None
 
-# Carga la URL de la variable secreta configurada en GitHub Actions
 WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK", "").strip()
 
 HEADERS = {
@@ -19,7 +18,7 @@ HEADERS = {
     "Accept-Language": "es-ES,es;q=0.9,en;q=0.8"
 }
 
-# Conjuntos de palabras clave ampliados (incluyendo bundles, binder, mini tin y cartas sueltas)
+# Palabras clave de búsqueda
 TARGET_KEYWORDS = [
     ["30", "booster", "bundle"],
     ["30", "ultra", "premium"],
@@ -28,35 +27,47 @@ TARGET_KEYWORDS = [
     ["30th", "celeb", "booster"],
     ["30", "binder"],
     ["30", "mini", "tin"],
-    ["30", "carta", "suelta"],
     ["30", "aniversario"]
 ]
 
-# Estructura global para acumular los hallazgos durante el rastreo
+# Términos prohibidos para filtrar productos en español
+EXCLUDE_KEYWORDS = ["español", "espanol", "spa"]
+
 hallazgos = []
 
-def coincide_palabras_clave(texto):
+def es_producto_valido(texto, url=""):
+    """Filtra productos que coincidan con las keywords y no estén en español"""
     if not texto:
         return False
-    texto_lower = texto.lower()
+    
+    texto_lower = f"{texto} {url}".lower()
+    
+    # 1. Exclusión estricta de español
+    if any(ex in texto_lower for ex in EXCLUDE_KEYWORDS):
+        return False
+        
+    # 2. Validación de palabras clave objetivo
     for conjunto in TARGET_KEYWORDS:
         if all(kw in texto_lower for kw in conjunto):
             return True
+            
     return False
 
-def registrar_producto(tienda, titulo, url_directa, tiene_stock, precio="N/A"):
+def registrar_producto(tienda, titulo, url_directa, tiene_stock, precio="N/A", cart_url=None, sku="N/A"):
     hallazgos.append({
         "tienda": tienda,
         "titulo": titulo,
         "url": url_directa,
         "stock": tiene_stock,
-        "precio": precio
+        "precio": precio,
+        "cart_url": cart_url or url_directa,
+        "sku": sku
     })
 
 def enviar_alerta_stock_inmediato(item):
-    """Notificación instantánea a Discord enviada únicamente cuando hay stock"""
+    """Notificación instantánea cuando hay stock"""
     payload = {
-        "content": f"🚨 **¡STOCK DETECTADO EN {item['tienda'].upper()}!** @everyone",
+        "content": f"🚨 **¡STOCK EN INGLÉS DETECTADO EN {item['tienda'].upper()}!** @everyone",
         "embeds": [{
             "title": f"🟢 {item['titulo']}",
             "url": item['url'],
@@ -64,7 +75,9 @@ def enviar_alerta_stock_inmediato(item):
             "fields": [
                 {"name": "Estado", "value": "🟢 CON STOCK DISPONIBLE", "inline": True},
                 {"name": "Tienda", "value": item['tienda'], "inline": True},
-                {"name": "Precio", "value": str(item['precio']), "inline": True}
+                {"name": "Precio", "value": str(item['precio']), "inline": True},
+                {"name": "SKU / Variant ID", "value": str(item['sku']), "inline": True},
+                {"name": "🛒 Comprar / Añadir Directo", "value": f"[Añadir al Carrito]({item['cart_url']})", "inline": False}
             ]
         }]
     }
@@ -75,18 +88,19 @@ def enviar_alerta_stock_inmediato(item):
         print(f"Error enviando alerta instantánea: {e}")
 
 def enviar_reporte_programado(hora_label):
-    """Reporte consolidado con todos los productos encontrados"""
+    """Reporte consolidado programado"""
     if not hallazgos:
-        descripcion = "No se encontraron publicaciones activas coincidentes en las tiendas rastreadas."
+        descripcion = "No se encontraron publicaciones activas coincidentes en inglés hoy."
     else:
         lineas = []
         for item in hallazgos:
             estado = "🟢 CON STOCK" if item['stock'] else "🔴 SIN STOCK"
-            lineas.append(f"• **[{item['tienda']}]** [{item['titulo']}]({item['url']}) - **{estado}** (Precio: {item['precio']})")
+            cart_link = f" | [🛒 Carrito Directo]({item['cart_url']})" if item['stock'] else ""
+            lineas.append(f"• **[{item['tienda']}]** [{item['titulo']}]({item['url']}) - **{estado}** ({item['precio']}){cart_link}")
         descripcion = "\n".join(lineas)
 
     payload = {
-        "content": f"📊 **REPORTE DE ESTADO POKÉMON TCG 30TH ({hora_label} HORA PERÚ)**",
+        "content": f"📊 **REPORTE POKÉMON TCG 30TH (PRODUCTOS EN INGLÉS - {hora_label} PET)**",
         "embeds": [{
             "title": "Consolidado de Tiendas Rastreadas",
             "description": descripcion,
@@ -96,62 +110,41 @@ def enviar_reporte_programado(hora_label):
     }
     try:
         res = requests.post(WEBHOOK_URL, json=payload, timeout=10)
-        print(f"Reporte de las {hora_label} enviado exitosamente a Discord -> HTTP {res.status_code}")
+        print(f"Reporte de las {hora_label} enviado a Discord -> HTTP {res.status_code}")
     except Exception as e:
         print(f"Error enviando reporte programado: {e}")
 
-# --- MÓDULOS DE RASTREO DE TIENDAS ---
+# --- MÓDULOS DE RASTREO ---
 
 def buscar_ilahui():
-    print("\n--- [Ilahui Perú] ---")
-    
-    # 1. Monitoreo por API pública de Shopify (búsqueda dinámica)
-    api_url = "https://ilahuiperu.com/search/suggest.json?q=pokemon+30&resources[type]=product"
-    try:
-        res = requests.get(api_url, headers=HEADERS, timeout=10)
-        if res.status_code == 200:
-            data = res.json()
-            products = data.get("resources", {}).get("results", {}).get("products", [])
-            for p in products:
-                titulo = p.get("title", "")
-                handle = p.get("handle", "")
-                url_directa = f"https://ilahuiperu.com/products/{handle}" if handle else "https://ilahuiperu.com"
-                precio = f"S/ {p.get('price', 'N/A')}"
-                
-                if coincide_palabras_clave(titulo):
-                    tiene_stock = p.get("available", False)
-                    print(f"[Ilahui API] {titulo} | Stock: {tiene_stock} | Precio: {precio}")
-                    registrar_producto("Ilahui", titulo, url_directa, tiene_stock, precio)
-    except Exception as e:
-        print(f"[Ilahui API Warning]: {e}")
-
-    # 2. Respaldo directo a enlaces específicos proporcionados
+    print("\n--- [Ilahui Perú (Shopify)] ---")
     urls_referencia = [
-        "https://ilahuiperu.com/products/pokemon-tcg-30th-celeb-boster-bundle-espanol",
-        "https://ilahuiperu.com/products/pokemon-tcg-30-aniversario-binder-collection-en-ingles",
-        "https://ilahuiperu.com/products/pokemon-tcg-30-aniversario-mini-tin-en-espanol",
-        "https://ilahuiperu.com/products/pokemon-tcg-30-aniversario-carta-suelta-en-espanol"
+        "https://ilahuiperu.com/products/pokemon-tcg-30-aniversario-binder-collection-en-ingles"
     ]
     
-    urls_registradas = [item['url'] for item in hallazgos if item['tienda'] == 'Ilahui']
-    
     for url in urls_referencia:
-        if url in urls_registradas:
-            continue
         try:
             res_js = requests.get(f"{url}.js", headers=HEADERS, timeout=10)
             if res_js.status_code == 200:
                 p_data = res_js.json()
-                titulo = p_data.get("title", "Pokémon TCG 30th")
-                precio = f"S/ {p_data.get('price', 0) / 100:.2f}"
-                tiene_stock = p_data.get("available", False)
-                print(f"[Ilahui JS] {titulo} | Stock: {tiene_stock} | Precio: {precio}")
-                registrar_producto("Ilahui", titulo, url, tiene_stock, precio)
+                titulo = p_data.get("title", "")
+                
+                if es_producto_valido(titulo, url):
+                    precio = f"S/ {p_data.get('price', 0) / 100:.2f}"
+                    variants = p_data.get("variants", [])
+                    
+                    variant_id = variants[0].get("id") if variants else None
+                    tiene_stock = any(v.get("available", False) for v in variants) if variants else p_data.get("available", False)
+                    
+                    cart_url = f"https://ilahuiperu.com/cart/add?id={variant_id}&quantity=1" if variant_id else url
+                    
+                    print(f"[Ilahui] {titulo} | Stock: {tiene_stock} | Variant ID: {variant_id}")
+                    registrar_producto("Ilahui", titulo, url, tiene_stock, precio, cart_url, sku=variant_id)
         except Exception as e:
-            print(f"[Ilahui Direct Warning]: {e}")
+            print(f"[Ilahui Warning]: {e}")
 
 def buscar_vtex(nombre, domain):
-    print(f"\n--- [{nombre}] ---")
+    print(f"\n--- [{nombre} (VTEX)] ---")
     query = urllib.parse.quote("tcg 30 aniversario")
     api_url = f"{domain}/api/catalog_system/pub/products/search?ft={query}&_from=0&_to=15"
     try:
@@ -161,20 +154,27 @@ def buscar_vtex(nombre, domain):
             if isinstance(productos, list):
                 for prod in productos:
                     nombre_p = prod.get("productName", "")
-                    if coincide_palabras_clave(nombre_p):
+                    link_prod = prod.get("link", domain)
+                    
+                    if es_producto_valido(nombre_p, link_prod):
                         tiene_stock = False
                         precio = "N/A"
+                        sku_id = None
+                        
                         for item in prod.get("items", []):
                             for seller in item.get("sellers", []):
                                 comm = seller.get("commertialOffer", {})
                                 if comm.get("AvailableQuantity", 0) > 0 and comm.get("IsAvailable", False):
                                     tiene_stock = True
+                                    sku_id = item.get("itemId")
                                     if "Price" in comm:
                                         precio = f"S/ {comm['Price']}"
                                     break
-                        link_prod = prod.get("link", domain)
-                        print(f"[{nombre}] {nombre_p} | Stock: {tiene_stock} | Precio: {precio}")
-                        registrar_producto(nombre, nombre_p, link_prod, tiene_stock, precio)
+                        
+                        cart_url = f"{domain}/checkout/cart/add?sku={sku_id}&qty=1&seller=1" if sku_id else link_prod
+                        
+                        print(f"[{nombre}] {nombre_p} | Stock: {tiene_stock} | SKU: {sku_id}")
+                        registrar_producto(nombre, nombre_p, link_prod, tiene_stock, precio, cart_url, sku=sku_id)
     except Exception as e:
         print(f"[{nombre}] Error: {e}")
 
@@ -193,9 +193,10 @@ def buscar_tailoy():
                     nombre = nombre_el.get_text(strip=True)
                     link_directo = nombre_el.get("href", "")
                     precio = precio_el.get_text(strip=True) if precio_el else "N/A"
-                    if coincide_palabras_clave(nombre):
+                    
+                    if es_producto_valido(nombre, link_directo):
                         tiene_stock = "sin stock" not in prod.text.lower() and "agotado" not in prod.text.lower()
-                        print(f"[Tai Loy] {nombre} | Stock: {tiene_stock} | Precio: {precio}")
+                        print(f"[Tai Loy] {nombre} | Stock: {tiene_stock}")
                         registrar_producto("Tai Loy", nombre, link_directo, tiene_stock, precio)
     except Exception as e:
         print(f"[Tai Loy] Error: {e}")
@@ -216,37 +217,37 @@ def buscar_phantom():
                     titulo = titulo_el.get_text(strip=True)
                     link_directo = link_el.get("href", "")
                     precio = precio_el.get_text(strip=True) if precio_el else "N/A"
-                    if coincide_palabras_clave(titulo):
+                    
+                    if es_producto_valido(titulo, link_directo):
                         tiene_stock = "agotado" not in item.text.lower()
-                        print(f"[Phantom] {titulo} | Stock: {tiene_stock} | Precio: {precio}")
+                        print(f"[Phantom] {titulo} | Stock: {tiene_stock}")
                         registrar_producto("Phantom", titulo, link_directo, tiene_stock, precio)
     except Exception as e:
         print(f"[Phantom] Error: {e}")
 
 if __name__ == "__main__":
     hora_actual = datetime.now()
-    print(f"Ejecutando rastreo: {hora_actual.strftime('%Y-%m-%d %H:%M:%S')} UTC")
+    print(f"Ejecutando rastreo Pokémon (Inglés): {hora_actual.strftime('%Y-%m-%d %H:%M:%S')} UTC")
     
-    # 1. Rastrear tiendas activas (incluyendo Ilahui)
+    # 1. Rastrear tiendas
     buscar_ilahui()
     buscar_vtex("Plaza Vea", "https://www.plazavea.com.pe")
     buscar_vtex("Oechsle", "https://www.oechsle.pe")
     buscar_tailoy()
     buscar_phantom()
     
-    # 2. Alerta instantánea: SOLO notifica si se detecta stock disponible
+    # 2. Alerta instantánea en Discord (solo si hay stock)
     stock_encontrado = False
     for item in hallazgos:
         if item["stock"]:
             stock_encontrado = True
-            print(f"¡Atención! Stock encontrado en {item['tienda']}. Enviando alerta instantánea...")
+            print(f"¡Atención! Stock en inglés encontrado en {item['tienda']}. Enviando alerta...")
             enviar_alerta_stock_inmediato(item)
 
     if not stock_encontrado:
-        print("Sin novedades de stock en ninguna tienda. Escaneo finalizado en silencio.")
+        print("Sin stock disponible para productos en inglés. Finalizado en silencio.")
 
-    # 3. Reportes consolidados programados (3 veces al día Hora Perú)
-    # 08:00 AM PET = 13:00 UTC | 01:00 PM PET = 18:00 UTC | 08:00 PM PET = 01:00 UTC
+    # 3. Reportes consolidados (08:00 AM, 01:00 PM y 08:00 PM Hora Perú)
     if hora_actual.hour == 13 and hora_actual.minute < 5:
         enviar_reporte_programado("08:00 AM")
     elif hora_actual.hour == 18 and hora_actual.minute < 5:
@@ -254,4 +255,4 @@ if __name__ == "__main__":
     elif hora_actual.hour == 1 and hora_actual.minute < 5:
         enviar_reporte_programado("08:00 PM")
 
-    print("Escaneo finalizado exitosamente.")
+    print("Escaneo finalizado.")
