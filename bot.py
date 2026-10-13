@@ -18,7 +18,7 @@ HEADERS = {
     "Accept-Language": "es-ES,es;q=0.9,en;q=0.8"
 }
 
-# Palabras clave ampliadas para cubrir todos los productos TCG 30 Aniversario en Inglés
+# Palabras clave ampliadas para cubrir productos TCG 30 Aniversario en Inglés
 TARGET_KEYWORDS = [
     ["30", "booster"], ["30", "bundle"], ["30", "ultra"], ["30", "premium"],
     ["30", "binder"], ["30", "tin"], ["30", "suelta"], ["30", "aniversario"],
@@ -28,13 +28,13 @@ TARGET_KEYWORDS = [
     ["tcg", "30", "ingles"], ["cartas", "pokemon", "30"]
 ]
 
-# Exclusiones estrictas (se quitó 'figura' para no bloquear colecciones TCG)
-EXCLUDE_KEYWORDS = ["español", "espanol", "spa", "peluche", "ron"]
+# Exclusiones estrictas (incluye filtro de español, peluche, ron, sorpresa y brillante)
+EXCLUDE_KEYWORDS = ["español", "espanol", "spa", "peluche", "ron", "sorpresa", "brillante"]
 
 hallazgos = []
 
 def es_producto_valido(texto, url=""):
-    """Filtra productos que coincidan con las keywords y no estén en español ni en la lista de exclusión"""
+    """Filtra productos que coincidan con las keywords y no estén en la lista de exclusión"""
     if not texto:
         return False
     
@@ -152,8 +152,6 @@ def buscar_ilahui():
 
 def buscar_vtex(nombre, domain):
     print(f"\n--- [{nombre} (VTEX)] ---")
-    
-    # Búsquedas por términos clave en VTEX
     terminos = ["30 aniversario", "tcg 30"]
     for term in terminos:
         query = urllib.parse.quote(term)
