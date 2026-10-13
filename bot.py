@@ -1,7 +1,6 @@
 import os
-import re
 import time
-from datetime import datetime, timezone
+from datetime import datetime
 import requests
 import urllib.parse
 from bs4 import BeautifulSoup
@@ -11,207 +10,173 @@ try:
 except ImportError:
     cloudscraper = None
 
-DEFAULT_WEBHOOK = "https://discord.com/api/webhooks/1558357066597539867/Q2JWn4-2j_5oaJ-fGYZNetTXKCHrkr5G8XFzIlBMHnXRchcc1_tXDgjbcBEU0EMPlgam"
-WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_POKEMON", DEFAULT_WEBHOOK).strip()
+# Carga la URL de la variable secreta configurada en GitHub Actions
+WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK", "").strip()
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    "Accept": "application/json, text/plain, */*",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "Accept-Language": "es-ES,es;q=0.9,en;q=0.8"
 }
 
-POKEMON_EXCLUIDAS = [
-    "español", "espanol", "spanish",
-    "venusaur", "charizard", "mimikyu", "garchomp", "bellibolt",
-    "eevee", "chaos rising", "portafolio", "klara", "greninja"
+# Conjuntos de palabras clave ampliados (incluyendo bundles, binder, mini tin y cartas sueltas)
+TARGET_KEYWORDS = [
+    ["30", "booster", "bundle"],
+    ["30", "ultra", "premium"],
+    ["tcg", "30", "ingles"],
+    ["cartas", "pokemon", "30"],
+    ["30th", "celeb", "booster"],
+    ["30", "binder"],
+    ["30", "mini", "tin"],
+    ["30", "carta", "suelta"],
+    ["30", "aniversario"]
 ]
 
-POKEMON_OBLIGATORIAS = ["pokemon", "pokémon", "tcg", "colección", "coleccion"]
-
-POKEMON_SECUNDARIAS = [
-    "30", "30th", "30a", "30.º", "30º", 
-    "celebracion", "celebración", "celebration", "anniversary", "aniversario", 
-    "booster", "bundle", "trainer", "etb", "ultra", "premium", "ingles", "inglés", "en inglés",
-    "ditto", "ditto premium collection", "blinder", "binder", "tech sticker", "sticker"
-]
-
+# Estructura global para acumular los hallazgos durante el rastreo
 hallazgos = []
 
-def coincide_pokemon(texto):
+def coincide_palabras_clave(texto):
     if not texto:
         return False
-    txt = texto.lower()
-    if any(exc in txt for exc in POKEMON_EXCLUIDAS):
-        return False
-    if not any(ob in txt for ob in POKEMON_OBLIGATORIAS):
-        return False
-    return any(sec in txt for sec in POKEMON_SECUNDARIAS)
+    texto_lower = texto.lower()
+    for conjunto in TARGET_KEYWORDS:
+        if all(kw in texto_lower for kw in conjunto):
+            return True
+    return False
 
-def registrar_producto(tienda, titulo, url_directa, tiene_stock, precio="N/A", sku_id=None):
-    if any(item['url'] == url_directa for item in hallazgos):
-        return
+def registrar_producto(tienda, titulo, url_directa, tiene_stock, precio="N/A"):
     hallazgos.append({
         "tienda": tienda,
         "titulo": titulo,
         "url": url_directa,
         "stock": tiene_stock,
-        "precio": precio,
-        "sku_id": sku_id
+        "precio": precio
     })
 
-def enviar_alerta_producto(item):
-    """Notificación instantánea SOLO cuando hay stock"""
-    if not WEBHOOK_URL:
-        print("ERROR CRÍTICO: Webhook de Pokémon no configurado.")
-        return
-
-    estado_txt = "🟢 CON STOCK DISPONIBLE"
-    color_embed = 3066993  # Verde
-
-    url_compra_directa = item['url']
-    tienda_lower = item['tienda'].lower()
-
-    if "plaza vea" in tienda_lower:
-        sku = item.get('sku_id') or "20711636"
-        url_compra_directa = f"https://www.plazavea.com.pe/checkout/cart/add?sku={sku}&qty=1&seller=1"
-    elif "oechsle" in tienda_lower and item.get('sku_id'):
-        sku = item.get('sku_id')
-        url_compra_directa = f"https://www.oechsle.pe/checkout/cart/add?sku={sku}&qty=1&seller=1"
-
-    fields = [
-        {"name": "Estado", "value": estado_txt, "inline": True},
-        {"name": "Tienda", "value": item['tienda'], "inline": True},
-        {"name": "Precio", "value": str(item['precio']), "inline": True}
-    ]
-
-    if "plaza vea" in tienda_lower or "oechsle" in tienda_lower:
-        fields.append({
-            "name": "🛒 Express Checkout", 
-            "value": f"[Añadir al Carrito e Ir a Pagar]({url_compra_directa})", 
-            "inline": False
-        })
-
+def enviar_alerta_stock_inmediato(item):
+    """Notificación instantánea a Discord enviada únicamente cuando hay stock"""
     payload = {
-        "content": f"🚨 **STOCK DETECTADO EN {item['tienda'].upper()}**",
+        "content": f"🚨 **¡STOCK DETECTADO EN {item['tienda'].upper()}!** @everyone",
         "embeds": [{
-            "title": f"{item['titulo']}",
+            "title": f"🟢 {item['titulo']}",
             "url": item['url'],
-            "color": color_embed,
-            "fields": fields
+            "color": 3066993,  # Verde
+            "fields": [
+                {"name": "Estado", "value": "🟢 CON STOCK DISPONIBLE", "inline": True},
+                {"name": "Tienda", "value": item['tienda'], "inline": True},
+                {"name": "Precio", "value": str(item['precio']), "inline": True}
+            ]
         }]
     }
     try:
         res = requests.post(WEBHOOK_URL, json=payload, timeout=10)
         print(f"Alerta enviada para {item['tienda']} -> HTTP {res.status_code}")
     except Exception as e:
-        print(f"Error enviando alerta: {e}")
+        print(f"Error enviando alerta instantánea: {e}")
 
 def enviar_reporte_programado(hora_label):
-    """Reporte consolidado de los 4 cortes diarios (incluye CON y SIN stock)"""
-    if not WEBHOOK_URL:
-        return
-
+    """Reporte consolidado con todos los productos encontrados"""
     if not hallazgos:
-        descripcion = "No se encontraron publicaciones activas de Pokémon TCG en las tiendas rastreadas."
+        descripcion = "No se encontraron publicaciones activas coincidentes en las tiendas rastreadas."
     else:
         lineas = []
         for item in hallazgos:
             estado = "🟢 CON STOCK" if item['stock'] else "🔴 SIN STOCK"
             lineas.append(f"• **[{item['tienda']}]** [{item['titulo']}]({item['url']}) - **{estado}** (Precio: {item['precio']})")
-        
-        descripcion = "\n".join(lineas[:25])
-        if len(lineas) > 25:
-            descripcion += f"\n\n*...y {len(lineas) - 25} publicaciones más.*"
+        descripcion = "\n".join(lineas)
 
     payload = {
         "content": f"📊 **REPORTE DE ESTADO POKÉMON TCG 30TH ({hora_label} HORA PERÚ)**",
         "embeds": [{
-            "title": "Consolidado de Tiendas Rastreadas (Con y Sin Stock)",
+            "title": "Consolidado de Tiendas Rastreadas",
             "description": descripcion,
-            "color": 3447003,
-            "footer": {"text": f"Generado el {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC"}
+            "color": 3447003,  # Azul
+            "footer": {"text": f"Generado el {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} UTC"}
         }]
     }
     try:
         res = requests.post(WEBHOOK_URL, json=payload, timeout=10)
-        print(f"Reporte de las {hora_label} enviado exitosamente -> HTTP {res.status_code}")
+        print(f"Reporte de las {hora_label} enviado exitosamente a Discord -> HTTP {res.status_code}")
     except Exception as e:
         print(f"Error enviando reporte programado: {e}")
 
-# --- MÓDULOS DE RASTREO ---
+# --- MÓDULOS DE RASTREO DE TIENDAS ---
+
+def buscar_ilahui():
+    print("\n--- [Ilahui Perú] ---")
+    
+    # 1. Monitoreo por API pública de Shopify (búsqueda dinámica)
+    api_url = "https://ilahuiperu.com/search/suggest.json?q=pokemon+30&resources[type]=product"
+    try:
+        res = requests.get(api_url, headers=HEADERS, timeout=10)
+        if res.status_code == 200:
+            data = res.json()
+            products = data.get("resources", {}).get("results", {}).get("products", [])
+            for p in products:
+                titulo = p.get("title", "")
+                handle = p.get("handle", "")
+                url_directa = f"https://ilahuiperu.com/products/{handle}" if handle else "https://ilahuiperu.com"
+                precio = f"S/ {p.get('price', 'N/A')}"
+                
+                if coincide_palabras_clave(titulo):
+                    tiene_stock = p.get("available", False)
+                    print(f"[Ilahui API] {titulo} | Stock: {tiene_stock} | Precio: {precio}")
+                    registrar_producto("Ilahui", titulo, url_directa, tiene_stock, precio)
+    except Exception as e:
+        print(f"[Ilahui API Warning]: {e}")
+
+    # 2. Respaldo directo a enlaces específicos proporcionados
+    urls_referencia = [
+        "https://ilahuiperu.com/products/pokemon-tcg-30th-celeb-boster-bundle-espanol",
+        "https://ilahuiperu.com/products/pokemon-tcg-30-aniversario-binder-collection-en-ingles",
+        "https://ilahuiperu.com/products/pokemon-tcg-30-aniversario-mini-tin-en-espanol",
+        "https://ilahuiperu.com/products/pokemon-tcg-30-aniversario-carta-suelta-en-espanol"
+    ]
+    
+    urls_registradas = [item['url'] for item in hallazgos if item['tienda'] == 'Ilahui']
+    
+    for url in urls_referencia:
+        if url in urls_registradas:
+            continue
+        try:
+            res_js = requests.get(f"{url}.js", headers=HEADERS, timeout=10)
+            if res_js.status_code == 200:
+                p_data = res_js.json()
+                titulo = p_data.get("title", "Pokémon TCG 30th")
+                precio = f"S/ {p_data.get('price', 0) / 100:.2f}"
+                tiene_stock = p_data.get("available", False)
+                print(f"[Ilahui JS] {titulo} | Stock: {tiene_stock} | Precio: {precio}")
+                registrar_producto("Ilahui", titulo, url, tiene_stock, precio)
+        except Exception as e:
+            print(f"[Ilahui Direct Warning]: {e}")
 
 def buscar_vtex(nombre, domain):
     print(f"\n--- [{nombre}] ---")
-    queries = [
-        "tcg 30 aniversario ingles",
-        "30.º aniversario",
-        "coleccion ultra premium tcg 30",
-        "ditto premium collection"
-    ]
-    for q in queries:
-        query_encoded = urllib.parse.quote(q)
-        api_url = f"{domain}/api/catalog_system/pub/products/search?ft={query_encoded}&_from=0&_to=20"
-        try:
-            res = requests.get(api_url, headers=HEADERS, timeout=10)
-            if res.status_code in [200, 206]:
-                productos = res.json()
-                if isinstance(productos, list):
-                    for prod in productos:
-                        nombre_p = prod.get("productName", "")
-                        if coincide_pokemon(nombre_p):
-                            tiene_stock = False
-                            precio = "N/A"
-                            sku_id = None
-                            
-                            items = prod.get("items", [])
-                            if items:
-                                sku_id = items[0].get("itemId")
-
-                            for item in items:
-                                for seller in item.get("sellers", []):
-                                    comm = seller.get("commertialOffer", {})
-                                    if comm.get("AvailableQuantity", 0) > 0 and comm.get("IsAvailable", False):
-                                        tiene_stock = True
-                                        if "Price" in comm:
-                                            precio = f"S/ {comm['Price']}"
-                                        break
-                            link_prod = prod.get("link", domain)
-                            print(f"[{nombre}] {nombre_p} | Stock: {tiene_stock} | Precio: {precio} | SKU: {sku_id}")
-                            registrar_producto(nombre, nombre_p, link_prod, tiene_stock, precio, sku_id)
-        except Exception as e:
-            print(f"[{nombre}] Error en búsqueda '{q}': {e}")
-
-    if "plazavea" in domain:
-        skus_directos = [
-            ("20711636", "Colección Ultra Premium TCG 30 Aniversario en Inglés", "https://www.plazavea.com.pe/coleccion-ultra-premium-tcg-30-aniversario-ingles-20711636/p")
-        ]
-        for prod_id, titulo_defecto, link_directo in skus_directos:
-            try:
-                api_sku = f"{domain}/api/catalog_system/pub/products/search?fq=productId:{prod_id}"
-                res_sku = requests.get(api_sku, headers=HEADERS, timeout=10)
-                if res_sku.status_code in [200, 206]:
-                    prods = res_sku.json()
-                    if isinstance(prods, list) and len(prods) > 0:
-                        prod = prods[0]
-                        nombre_p = prod.get("productName", titulo_defecto)
-                        if coincide_pokemon(nombre_p):
-                            tiene_stock = False
-                            precio = "N/A"
-                            items = prod.get("items", [])
-                            sku_id = items[0].get("itemId") if items else prod_id
-
-                            for item in items:
-                                for seller in item.get("sellers", []):
-                                    comm = seller.get("commertialOffer", {})
-                                    if comm.get("AvailableQuantity", 0) > 0 and comm.get("IsAvailable", False):
-                                        tiene_stock = True
-                                        if "Price" in comm:
-                                            precio = f"S/ {comm['Price']}"
-                                        break
-                            print(f"[{nombre} DIRECTO] {nombre_p} | Stock: {tiene_stock} | Precio: {precio} | SKU: {sku_id}")
-                            registrar_producto(nombre, nombre_p, link_directo, tiene_stock, precio, sku_id)
-            except Exception as e:
-                print(f"[{nombre} DIRECTO] Error consultando ID {prod_id}: {e}")
+    query = urllib.parse.quote("tcg 30 aniversario")
+    api_url = f"{domain}/api/catalog_system/pub/products/search?ft={query}&_from=0&_to=15"
+    try:
+        res = requests.get(api_url, headers=HEADERS, timeout=10)
+        if res.status_code in [200, 206]:
+            productos = res.json()
+            if isinstance(productos, list):
+                for prod in productos:
+                    nombre_p = prod.get("productName", "")
+                    if coincide_palabras_clave(nombre_p):
+                        tiene_stock = False
+                        precio = "N/A"
+                        for item in prod.get("items", []):
+                            for seller in item.get("sellers", []):
+                                comm = seller.get("commertialOffer", {})
+                                if comm.get("AvailableQuantity", 0) > 0 and comm.get("IsAvailable", False):
+                                    tiene_stock = True
+                                    if "Price" in comm:
+                                        precio = f"S/ {comm['Price']}"
+                                    break
+                        link_prod = prod.get("link", domain)
+                        print(f"[{nombre}] {nombre_p} | Stock: {tiene_stock} | Precio: {precio}")
+                        registrar_producto(nombre, nombre_p, link_prod, tiene_stock, precio)
+    except Exception as e:
+        print(f"[{nombre}] Error: {e}")
 
 def buscar_tailoy():
     print("\n--- [Tai Loy] ---")
@@ -228,7 +193,7 @@ def buscar_tailoy():
                     nombre = nombre_el.get_text(strip=True)
                     link_directo = nombre_el.get("href", "")
                     precio = precio_el.get_text(strip=True) if precio_el else "N/A"
-                    if coincide_pokemon(nombre):
+                    if coincide_palabras_clave(nombre):
                         tiene_stock = "sin stock" not in prod.text.lower() and "agotado" not in prod.text.lower()
                         print(f"[Tai Loy] {nombre} | Stock: {tiene_stock} | Precio: {precio}")
                         registrar_producto("Tai Loy", nombre, link_directo, tiene_stock, precio)
@@ -251,7 +216,7 @@ def buscar_phantom():
                     titulo = titulo_el.get_text(strip=True)
                     link_directo = link_el.get("href", "")
                     precio = precio_el.get_text(strip=True) if precio_el else "N/A"
-                    if coincide_pokemon(titulo):
+                    if coincide_palabras_clave(titulo):
                         tiene_stock = "agotado" not in item.text.lower()
                         print(f"[Phantom] {titulo} | Stock: {tiene_stock} | Precio: {precio}")
                         registrar_producto("Phantom", titulo, link_directo, tiene_stock, precio)
@@ -259,33 +224,34 @@ def buscar_phantom():
         print(f"[Phantom] Error: {e}")
 
 if __name__ == "__main__":
-    hora_actual = datetime.now(timezone.utc)
-    print(f"Ejecutando rastreo Pokémon TCG: {hora_actual.strftime('%Y-%m-%d %H:%M:%S')} UTC")
+    hora_actual = datetime.now()
+    print(f"Ejecutando rastreo: {hora_actual.strftime('%Y-%m-%d %H:%M:%S')} UTC")
     
+    # 1. Rastrear tiendas activas (incluyendo Ilahui)
+    buscar_ilahui()
     buscar_vtex("Plaza Vea", "https://www.plazavea.com.pe")
     buscar_vtex("Oechsle", "https://www.oechsle.pe")
     buscar_tailoy()
     buscar_phantom()
     
-    # 1. Alertas instantáneas: SOLO si el producto TIENE stock
-    productos_con_stock = [p for p in hallazgos if p['stock']]
-    if productos_con_stock:
-        print(f"\n--- Enviando Alertas Instantáneas para Productos con Stock ({len(productos_con_stock)}) ---")
-        for item in productos_con_stock:
-            enviar_alerta_producto(item)
-    else:
-        print("\nNo hay productos con stock para alertar de forma instantánea.")
+    # 2. Alerta instantánea: SOLO notifica si se detecta stock disponible
+    stock_encontrado = False
+    for item in hallazgos:
+        if item["stock"]:
+            stock_encontrado = True
+            print(f"¡Atención! Stock encontrado en {item['tienda']}. Enviando alerta instantánea...")
+            enviar_alerta_stock_inmediato(item)
 
-    # 2. Reportes consolidados programados (4 veces al día - PET / UTC-5)
-    # Incluye el estado de TODOS los productos (con y sin stock)
-    if hora_actual.minute < 20:
-        if hora_actual.hour == 13:      # 08:00 AM PET (13:00 UTC)
-            enviar_reporte_programado("08:00 AM")
-        elif hora_actual.hour == 17:    # 12:00 PM PET (17:00 UTC)
-            enviar_reporte_programado("12:00 PM")
-        elif hora_actual.hour == 21:    # 04:00 PM PET (21:00 UTC)
-            enviar_reporte_programado("04:00 PM")
-        elif hora_actual.hour == 1:     # 08:00 PM PET (01:00 UTC)
-            enviar_reporte_programado("08:00 PM")
+    if not stock_encontrado:
+        print("Sin novedades de stock en ninguna tienda. Escaneo finalizado en silencio.")
+
+    # 3. Reportes consolidados programados (3 veces al día Hora Perú)
+    # 08:00 AM PET = 13:00 UTC | 01:00 PM PET = 18:00 UTC | 08:00 PM PET = 01:00 UTC
+    if hora_actual.hour == 13 and hora_actual.minute < 5:
+        enviar_reporte_programado("08:00 AM")
+    elif hora_actual.hour == 18 and hora_actual.minute < 5:
+        enviar_reporte_programado("01:00 PM")
+    elif hora_actual.hour == 1 and hora_actual.minute < 5:
+        enviar_reporte_programado("08:00 PM")
 
     print("Escaneo finalizado exitosamente.")
