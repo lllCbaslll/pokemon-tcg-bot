@@ -30,19 +30,19 @@ TARGET_KEYWORDS = [
     ["30", "aniversario"]
 ]
 
-# Términos prohibidos para filtrar productos en español
-EXCLUDE_KEYWORDS = ["español", "espanol", "spa"]
+# Términos prohibidos para ignorar español y productos no deseados (peluches, figuras, licores)
+EXCLUDE_KEYWORDS = ["español", "espanol", "spa", "peluche", "figura", "ron"]
 
 hallazgos = []
 
 def es_producto_valido(texto, url=""):
-    """Filtra productos que coincidan con las keywords y no estén en español"""
+    """Filtra productos que coincidan con las keywords y no estén en la lista de exclusión"""
     if not texto:
         return False
     
     texto_lower = f"{texto} {url}".lower()
     
-    # 1. Exclusión estricta de español
+    # 1. Exclusión de palabras prohibidas
     if any(ex in texto_lower for ex in EXCLUDE_KEYWORDS):
         return False
         
@@ -245,7 +245,7 @@ if __name__ == "__main__":
             enviar_alerta_stock_inmediato(item)
 
     if not stock_encontrado:
-        print("Sin stock disponible para productos en inglés. Finalizado en silencio.")
+        print("Sin stock disponible para productos válidos. Finalizado en silencio.")
 
     # 3. Reportes consolidados (08:00 AM, 01:00 PM y 08:00 PM Hora Perú)
     if hora_actual.hour == 13 and hora_actual.minute < 5:
