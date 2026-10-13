@@ -18,25 +18,23 @@ HEADERS = {
     "Accept-Language": "es-ES,es;q=0.9,en;q=0.8"
 }
 
-# Palabras clave de búsqueda
+# Palabras clave ampliadas para cubrir todos los productos TCG 30 Aniversario en Inglés
 TARGET_KEYWORDS = [
-    ["30", "booster", "bundle"],
-    ["30", "ultra", "premium"],
-    ["tcg", "30", "ingles"],
-    ["cartas", "pokemon", "30"],
-    ["30th", "celeb", "booster"],
-    ["30", "binder"],
-    ["30", "mini", "tin"],
-    ["30", "aniversario"]
+    ["30", "booster"], ["30", "bundle"], ["30", "ultra"], ["30", "premium"],
+    ["30", "binder"], ["30", "tin"], ["30", "suelta"], ["30", "aniversario"],
+    ["30", "pack"], ["30", "caja"], ["30", "sobre"], ["30", "álbum"], ["30", "album"],
+    ["30", "poster"], ["30", "entrenador"], ["30", "élite"], ["30", "elite"],
+    ["30", "ex"], ["30", "pokeball"], ["30", "colección"], ["30", "coleccion"],
+    ["tcg", "30", "ingles"], ["cartas", "pokemon", "30"]
 ]
 
-# Términos prohibidos para ignorar español y productos no deseados (peluches, figuras, licores)
-EXCLUDE_KEYWORDS = ["español", "espanol", "spa", "peluche", "figura", "ron"]
+# Exclusiones estrictas (se quitó 'figura' para no bloquear colecciones TCG)
+EXCLUDE_KEYWORDS = ["español", "espanol", "spa", "peluche", "ron"]
 
 hallazgos = []
 
 def es_producto_valido(texto, url=""):
-    """Filtra productos que coincidan con las keywords y no estén en la lista de exclusión"""
+    """Filtra productos que coincidan con las keywords y no estén en español ni en la lista de exclusión"""
     if not texto:
         return False
     
@@ -46,7 +44,11 @@ def es_producto_valido(texto, url=""):
     if any(ex in texto_lower for ex in EXCLUDE_KEYWORDS):
         return False
         
-    # 2. Validación de palabras clave objetivo
+    # 2. Si el texto o URL indica explícitamente "ingles", "inglés" o "english", se valida directamente si menciona 30
+    if ("30" in texto_lower or "30°" in texto_lower) and any(lang in texto_lower for lang in ["ingles", "inglés", "english"]):
+        return True
+
+    # 3. Validación por conjuntos de palabras clave objetivo
     for conjunto in TARGET_KEYWORDS:
         if all(kw in texto_lower for kw in conjunto):
             return True
@@ -54,6 +56,11 @@ def es_producto_valido(texto, url=""):
     return False
 
 def registrar_producto(tienda, titulo, url_directa, tiene_stock, precio="N/A", cart_url=None, sku="N/A"):
+    # Evitar duplicados por URL
+    for h in hallazgos:
+        if h["url"] == url_directa:
+            return
+
     hallazgos.append({
         "tienda": tienda,
         "titulo": titulo,
@@ -96,7 +103,7 @@ def enviar_reporte_programado(hora_label):
         for item in hallazgos:
             estado = "🟢 CON STOCK" if item['stock'] else "🔴 SIN STOCK"
             cart_link = f" | [🛒 Carrito Directo]({item['cart_url']})" if item['stock'] else ""
-            lineas.append(f"• **[{item['tienda']}]** [{item['titulo']}]({item['url']}) - **{estado}** ({item['precio']}){cart_link}")
+            lineas.append(f"• **[{item['tienda']}]** [{item['titulo']}]({item['url']}) - **{estado}** (Precio: {item['precio']}){cart_link}")
         descripcion = "\n".join(lineas)
 
     payload = {
@@ -145,38 +152,42 @@ def buscar_ilahui():
 
 def buscar_vtex(nombre, domain):
     print(f"\n--- [{nombre} (VTEX)] ---")
-    query = urllib.parse.quote("tcg 30 aniversario")
-    api_url = f"{domain}/api/catalog_system/pub/products/search?ft={query}&_from=0&_to=15"
-    try:
-        res = requests.get(api_url, headers=HEADERS, timeout=10)
-        if res.status_code in [200, 206]:
-            productos = res.json()
-            if isinstance(productos, list):
-                for prod in productos:
-                    nombre_p = prod.get("productName", "")
-                    link_prod = prod.get("link", domain)
-                    
-                    if es_producto_valido(nombre_p, link_prod):
-                        tiene_stock = False
-                        precio = "N/A"
-                        sku_id = None
+    
+    # Búsquedas por términos clave en VTEX
+    terminos = ["30 aniversario", "tcg 30"]
+    for term in terminos:
+        query = urllib.parse.quote(term)
+        api_url = f"{domain}/api/catalog_system/pub/products/search?ft={query}&_from=0&_to=30"
+        try:
+            res = requests.get(api_url, headers=HEADERS, timeout=10)
+            if res.status_code in [200, 206]:
+                productos = res.json()
+                if isinstance(productos, list):
+                    for prod in productos:
+                        nombre_p = prod.get("productName", "")
+                        link_prod = prod.get("link", domain)
                         
-                        for item in prod.get("items", []):
-                            for seller in item.get("sellers", []):
-                                comm = seller.get("commertialOffer", {})
-                                if comm.get("AvailableQuantity", 0) > 0 and comm.get("IsAvailable", False):
-                                    tiene_stock = True
-                                    sku_id = item.get("itemId")
-                                    if "Price" in comm:
-                                        precio = f"S/ {comm['Price']}"
-                                    break
-                        
-                        cart_url = f"{domain}/checkout/cart/add?sku={sku_id}&qty=1&seller=1" if sku_id else link_prod
-                        
-                        print(f"[{nombre}] {nombre_p} | Stock: {tiene_stock} | SKU: {sku_id}")
-                        registrar_producto(nombre, nombre_p, link_prod, tiene_stock, precio, cart_url, sku=sku_id)
-    except Exception as e:
-        print(f"[{nombre}] Error: {e}")
+                        if es_producto_valido(nombre_p, link_prod):
+                            tiene_stock = False
+                            precio = "N/A"
+                            sku_id = None
+                            
+                            for item in prod.get("items", []):
+                                for seller in item.get("sellers", []):
+                                    comm = seller.get("commertialOffer", {})
+                                    if comm.get("AvailableQuantity", 0) > 0 and comm.get("IsAvailable", False):
+                                        tiene_stock = True
+                                        sku_id = item.get("itemId")
+                                        if "Price" in comm:
+                                            precio = f"S/ {comm['Price']}"
+                                        break
+                            
+                            cart_url = f"{domain}/checkout/cart/add?sku={sku_id}&qty=1&seller=1" if sku_id else link_prod
+                            
+                            print(f"[{nombre}] {nombre_p} | Stock: {tiene_stock} | SKU: {sku_id}")
+                            registrar_producto(nombre, nombre_p, link_prod, tiene_stock, precio, cart_url, sku=sku_id)
+        except Exception as e:
+            print(f"[{nombre}] Error con consulta '{term}': {e}")
 
 def buscar_tailoy():
     print("\n--- [Tai Loy] ---")
