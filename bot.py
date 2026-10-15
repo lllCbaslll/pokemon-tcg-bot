@@ -276,7 +276,10 @@ def buscar_phantom():
 
 if __name__ == "__main__":
     hora_actual = datetime.now(ZONA_HORARIA_LOCAL)
-    print(f"Ejecutando rastreo Pokémon (Inglés): {hora_actual.strftime('%Y-%m-%d %H:%M:%S')} {hora_actual.tzname()}")
+    modo = os.getenv("MODO_EJECUCION", "NORMAL")
+    
+    print(f"Ejecutando rastreo Pokémon (Inglés) en MODO: {modo}")
+    print(f"Fecha/Hora PET: {hora_actual.strftime('%Y-%m-%d %H:%M:%S')} {hora_actual.tzname()}")
     
     # 1. Rastrear tiendas
     buscar_ilahui()
@@ -285,7 +288,7 @@ if __name__ == "__main__":
     buscar_tailoy()
     buscar_phantom()
     
-    # 2. Alerta instantánea en Discord (solo si hay stock)
+    # 2. Alerta instantánea en Discord (solo si hay stock y no estamos en forzar reporte único)
     stock_encontrado = False
     for item in hallazgos:
         if item["stock"]:
@@ -294,11 +297,11 @@ if __name__ == "__main__":
             enviar_alerta_stock_inmediato(item)
 
     if not stock_encontrado:
-        print("Sin stock disponible para productos válidos en esta revisión.")
+        print("Sin stock disponible para productos válidos en este escaneo.")
 
-    # 3. Reportes consolidados programados (8 veces al día: Cada 3 horas)
-    # Se evalúa si la hora actual es divisible entre 3 (00, 03, 06, 09, 12, 15, 18, 21)
-    if hora_actual.hour % 3 == 0:
+    # 3. Reporte consolidado
+    # Se envía si se fuerza desde el workflow de reportes o si es modo NORMAL a la hora correspondiente
+    if modo == "FORZAR_REPORTE" or (modo == "NORMAL" and hora_actual.hour % 3 == 0):
         label_hora = hora_actual.strftime("%I:00 %p")
         enviar_reporte_programado(label_hora)
 
