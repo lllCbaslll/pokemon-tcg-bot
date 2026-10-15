@@ -1,3 +1,4 @@
-requests
-cloudscraper
-beautifulsoup4
+requests>=2.31.0
+beautifulsoup4>=4.12.0
+cloudscraper>=1.2.71
+tzdata>=2024.1
