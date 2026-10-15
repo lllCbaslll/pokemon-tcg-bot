@@ -1,6 +1,7 @@
 import os
 import time
 from datetime import datetime
+from zoneinfo import ZoneInfo
 import requests
 import urllib.parse
 from bs4 import BeautifulSoup
@@ -9,6 +10,9 @@ try:
     import cloudscraper
 except ImportError:
     cloudscraper = None
+
+# Configuración de zona horaria local (Perú)
+ZONA_HORARIA_LOCAL = ZoneInfo("America/Lima")
 
 WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK", "").strip()
 
@@ -52,7 +56,7 @@ def generar_link_carrito(tienda, sku, url_directa, domain=""):
         base_domain = domain if domain else "https://" + urllib.parse.urlparse(url_directa).netloc
         return f"{base_domain}/checkout/cart/add?sku={sku}&qty=1&seller=1"
         
-    # WooCommerce / Magento (Ejemplo: Phantom, Tai Loy con query params)
+    # WooCommerce / Magento (Ejemplo: Phantom, Tai Loy)
     elif "phantom" in tienda_lower:
         return f"{url_directa}?add-to-cart={sku}"
         
@@ -143,7 +147,7 @@ def enviar_reporte_programado(hora_label):
             "title": "Consolidado de Tiendas Rastreadas",
             "description": descripcion,
             "color": 3447003,  # Azul
-            "footer": {"text": f"Generado el {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} UTC"}
+            "footer": {"text": f"Generado el {datetime.now(ZONA_HORARIA_LOCAL).strftime('%Y-%m-%d %H:%M:%S')} PET"}
         }]
     }
     try:
@@ -271,8 +275,8 @@ def buscar_phantom():
         print(f"[Phantom] Error: {e}")
 
 if __name__ == "__main__":
-    hora_actual = datetime.now()
-    print(f"Ejecutando rastreo Pokémon (Inglés): {hora_actual.strftime('%Y-%m-%d %H:%M:%S')} UTC")
+    hora_actual = datetime.now(ZONA_HORARIA_LOCAL)
+    print(f"Ejecutando rastreo Pokémon (Inglés): {hora_actual.strftime('%Y-%m-%d %H:%M:%S')} {hora_actual.tzname()}")
     
     # 1. Rastrear tiendas
     buscar_ilahui()
@@ -292,24 +296,18 @@ if __name__ == "__main__":
     if not stock_encontrado:
         print("Sin stock disponible para productos válidos. Finalizado en silencio.")
 
-    # 3. Reportes consolidados (6 veces al día según Hora Perú / UTC equivalente)
-    # UTC 09:00 -> 04:00 AM PET
-    # UTC 13:00 -> 08:00 AM PET
-    # UTC 17:00 -> 12:00 PM PET
-    # UTC 21:00 -> 04:00 PM PET
-    # UTC 01:00 -> 08:00 PM PET
-    # UTC 05:00 -> 12:00 AM PET
-    if hora_actual.hour == 9 and hora_actual.minute < 5:
+    # 3. Reportes consolidados (04:00 AM, 08:00 AM, 12:00 PM, 04:00 PM, 08:00 PM y 12:00 AM Hora Perú / PET)
+    if hora_actual.hour == 4 and hora_actual.minute < 5:
         enviar_reporte_programado("04:00 AM")
-    elif hora_actual.hour == 13 and hora_actual.minute < 5:
+    elif hora_actual.hour == 8 and hora_actual.minute < 5:
         enviar_reporte_programado("08:00 AM")
-    elif hora_actual.hour == 17 and hora_actual.minute < 5:
+    elif hora_actual.hour == 12 and hora_actual.minute < 5:
         enviar_reporte_programado("12:00 PM")
-    elif hora_actual.hour == 21 and hora_actual.minute < 5:
+    elif hora_actual.hour == 16 and hora_actual.minute < 5:
         enviar_reporte_programado("04:00 PM")
-    elif hora_actual.hour == 1 and hora_actual.minute < 5:
+    elif hora_actual.hour == 20 and hora_actual.minute < 5:
         enviar_reporte_programado("08:00 PM")
-    elif hora_actual.hour == 5 and hora_actual.minute < 5:
+    elif hora_actual.hour == 0 and hora_actual.minute < 5:
         enviar_reporte_programado("12:00 AM")
 
     print("Escaneo finalizado.")
