@@ -28,8 +28,11 @@ TARGET_KEYWORDS = [
     ["tcg", "30", "ingles"], ["cartas", "pokemon", "30"]
 ]
 
-# Exclusiones estrictas (incluye filtro de español, peluche, ron, sorpresa y brillante)
-EXCLUDE_KEYWORDS = ["español", "espanol", "spa", "peluche", "ron", "sorpresa", "brillante"]
+# Exclusiones estrictas (incluye filtro de español, peluche, ron, sorpresa, brillante, ps5, pokeball, buzz y pack)
+EXCLUDE_KEYWORDS = [
+    "español", "espanol", "spa", "peluche", "ron", "sorpresa", "brillante",
+    "ps5", "pokeball", "buzz", "pack"
+]
 
 hallazgos = []
 
