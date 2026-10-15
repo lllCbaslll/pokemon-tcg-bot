@@ -69,15 +69,12 @@ def es_producto_valido(texto, url=""):
     
     texto_lower = f"{texto} {url}".lower()
     
-    # 1. Exclusión de palabras prohibidas
     if any(ex in texto_lower for ex in EXCLUDE_KEYWORDS):
         return False
         
-    # 2. Si el texto o URL indica explícitamente "ingles", "inglés" o "english", se valida directamente si menciona 30
     if ("30" in texto_lower or "30°" in texto_lower) and any(lang in texto_lower for lang in ["ingles", "inglés", "english"]):
         return True
 
-    # 3. Validación por conjuntos de palabras clave objetivo
     for conjunto in TARGET_KEYWORDS:
         if all(kw in texto_lower for kw in conjunto):
             return True
@@ -85,12 +82,10 @@ def es_producto_valido(texto, url=""):
     return False
 
 def registrar_producto(tienda, titulo, url_directa, tiene_stock, precio="N/A", cart_url=None, sku="N/A", domain=""):
-    # Evitar duplicados por URL
     for h in hallazgos:
         if h["url"] == url_directa:
             return
 
-    # Si no nos pasan un cart_url precalculado, lo generamos dinámicamente con el SKU
     final_cart_url = cart_url or generar_link_carrito(tienda, sku, url_directa, domain)
 
     hallazgos.append({
@@ -104,7 +99,7 @@ def registrar_producto(tienda, titulo, url_directa, tiene_stock, precio="N/A", c
     })
 
 def enviar_alerta_stock_inmediato(item):
-    """Notificación instantánea cuando hay stock"""
+    """Notificación instantánea mejorada visualmente cuando hay stock"""
     payload = {
         "content": f"🚨 **¡STOCK EN INGLÉS DETECTADO EN {item['tienda'].upper()}!** @everyone",
         "embeds": [{
@@ -112,12 +107,13 @@ def enviar_alerta_stock_inmediato(item):
             "url": item['url'],
             "color": 3066993,  # Verde
             "fields": [
-                {"name": "Estado", "value": "🟢 CON STOCK DISPONIBLE", "inline": True},
-                {"name": "Tienda", "value": item['tienda'], "inline": True},
-                {"name": "Precio", "value": str(item['precio']), "inline": True},
-                {"name": "SKU / Variant ID", "value": str(item['sku']), "inline": True},
-                {"name": "🛒 Comprar Directo (SKU)", "value": f"[Añadir al Carrito con SKU {item['sku']}]({item['cart_url']})", "inline": False}
-            ]
+                {"name": "📌 Estado", "value": "🟢 **DISPONIBLE**", "inline": True},
+                {"name": "🏪 Tienda", "value": f"`{item['tienda']}`", "inline": True},
+                {"name": "💵 Precio", "value": f"**{item['precio']}**", "inline": True},
+                {"name": "🔑 SKU / ID", "value": f"`{item['sku']}`", "inline": True},
+                {"name": "⚡ Acción Rápida", "value": f"[🛒 **Añadir al Carrito Directo**]({item['cart_url']}) | [🔗 **Ver en Tienda**]({item['url']})", "inline": False}
+            ],
+            "footer": {"text": "Sistema de Monitoreo Pokémon TCG 30th"}
         }]
     }
     try:
@@ -127,27 +123,31 @@ def enviar_alerta_stock_inmediato(item):
         print(f"Error enviando alerta instantánea: {e}")
 
 def enviar_reporte_programado(hora_label):
-    """Reporte consolidado programado con enlace directo al carrito vía SKU"""
+    """Reporte consolidado visualmente mejorado (Se ejecuta con o sin stock)"""
     if not hallazgos:
-        descripcion = "No se encontraron publicaciones activas coincidentes en inglés hoy."
+        descripcion = "⚠️ *No se registraron publicaciones coincidentes en esta revisión.*"
     else:
         lineas = []
         for item in hallazgos:
-            estado = "🟢 CON STOCK" if item['stock'] else "🔴 SIN STOCK"
-            sku_info = f" (SKU: {item['sku']})" if item['sku'] != "N/A" else ""
-            lineas.append(
-                f"• **[{item['tienda']}]** [{item['titulo']}]({item['url']}) - **{estado}** | Precio: {item['precio']}\n"
-                f"  └ 🛒 [Añadir Directo al Carrito{sku_info}]({item['cart_url']})"
+            estado_icon = "🟢 **CON STOCK**" if item['stock'] else "🔴 **SIN STOCK**"
+            sku_info = f" `(SKU: {item['sku']})`" if item['sku'] != "N/A" else ""
+            
+            linea = (
+                f"• **[{item['tienda']}]** [{item['titulo']}]({item['url']})\n"
+                f"  └ Estado: {estado_icon} | Precio: **{item['precio']}**{sku_info}\n"
+                f"  └ 🛒 [Añadir Directo al Carrito]({item['cart_url']})\n"
             )
+            lineas.append(linea)
+            
         descripcion = "\n".join(lineas)
 
     payload = {
-        "content": f"📊 **REPORTE CONSOLIDADO POKÉMON TCG 30TH ({hora_label} PET)**",
+        "content": f"📊 **REPORTE CONSOLIDADO POKÉMON TCG 30TH** (`{hora_label}` PET)",
         "embeds": [{
-            "title": "Consolidado de Tiendas Rastreadas",
+            "title": "📋 Resumen General de Tiendas Rastreadas",
             "description": descripcion,
             "color": 3447003,  # Azul
-            "footer": {"text": f"Generado el {datetime.now(ZONA_HORARIA_LOCAL).strftime('%Y-%m-%d %H:%M:%S')} PET"}
+            "footer": {"text": f"Generado el {datetime.now(ZONA_HORARIA_LOCAL).strftime('%Y-%m-%d %I:%M %p')} PET"}
         }]
     }
     try:
@@ -294,20 +294,12 @@ if __name__ == "__main__":
             enviar_alerta_stock_inmediato(item)
 
     if not stock_encontrado:
-        print("Sin stock disponible para productos válidos. Finalizado en silencio.")
+        print("Sin stock disponible para productos válidos en esta revisión.")
 
-    # 3. Reportes consolidados (04:00 AM, 08:00 AM, 12:00 PM, 04:00 PM, 08:00 PM y 12:00 AM Hora Perú / PET)
-    if hora_actual.hour == 4 and hora_actual.minute < 5:
-        enviar_reporte_programado("04:00 AM")
-    elif hora_actual.hour == 8 and hora_actual.minute < 5:
-        enviar_reporte_programado("08:00 AM")
-    elif hora_actual.hour == 12 and hora_actual.minute < 5:
-        enviar_reporte_programado("12:00 PM")
-    elif hora_actual.hour == 16 and hora_actual.minute < 5:
-        enviar_reporte_programado("04:00 PM")
-    elif hora_actual.hour == 20 and hora_actual.minute < 5:
-        enviar_reporte_programado("08:00 PM")
-    elif hora_actual.hour == 0 and hora_actual.minute < 5:
-        enviar_reporte_programado("12:00 AM")
+    # 3. Reportes consolidados programados (8 veces al día: Cada 3 horas)
+    # Se evalúa si la hora actual es divisible entre 3 (00, 03, 06, 09, 12, 15, 18, 21)
+    if hora_actual.hour % 3 == 0:
+        label_hora = hora_actual.strftime("%I:00 %p")
+        enviar_reporte_programado(label_hora)
 
     print("Escaneo finalizado.")
