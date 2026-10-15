@@ -1,4 +1,4 @@
-name: Monitor Pokemon TCG 24/7
+name: Monitor Pokemon TCG - Stock Inmediato
 
 on:
   schedule:
@@ -6,32 +6,26 @@ on:
   workflow_dispatch:
 
 jobs:
-  run-bot:
+  check-stock:
     runs-on: ubuntu-latest
 
     steps:
       - name: Descargar codigo
         uses: actions/checkout@v4
 
-      - name: Configurar Python y Caché de PIP
+      - name: Configurar Python y Cache de PIP
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
-          cache: 'pip' # <--- Activa la caché automática basada en requirements.txt
+          cache: 'pip'
 
       - name: Instalar librerias
         run: |
           pip install -r requirements.txt
 
-      - name: Ejecutar Rastreador (Bucle de alta frecuencia)
+      - name: Ejecutar Rastreador
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          MODO_EJECUCION: "SOLO_ALERTAS"
         run: |
-          END_TIME=$((SECONDS + 240))
-          
-          while [ $SECONDS -lt $END_TIME ]; do
-            echo "--- Iniciando ciclo de rastreo: $(date) ---"
-            python bot.py
-            echo "--- Esperando 60 segundos para el siguiente escaneo... ---"
-            sleep 60
-          done
+          python bot.py
