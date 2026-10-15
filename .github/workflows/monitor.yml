@@ -2,9 +2,8 @@ name: Monitor Pokemon TCG 24/7
 
 on:
   schedule:
-    # Se ejecuta cada 5 minutos en la nube
     - cron: '*/5 * * * *'
-  workflow_dispatch: # Permite ejecución manual si lo deseas
+  workflow_dispatch:
 
 jobs:
   run-bot:
@@ -14,16 +13,25 @@ jobs:
       - name: Descargar codigo
         uses: actions/checkout@v4
 
-      - name: Configurar Python
+      - name: Configurar Python y Caché de PIP
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
+          cache: 'pip' # <--- Activa la caché automática basada en requirements.txt
 
       - name: Instalar librerias
         run: |
-          pip install requests cloudscraper beautifulsoup4
+          pip install -r requirements.txt
 
-      - name: Ejecutar Rastreador
+      - name: Ejecutar Rastreador (Bucle de alta frecuencia)
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
-        run: python bot.py
+        run: |
+          END_TIME=$((SECONDS + 240))
+          
+          while [ $SECONDS -lt $END_TIME ]; do
+            echo "--- Iniciando ciclo de rastreo: $(date) ---"
+            python bot.py
+            echo "--- Esperando 60 segundos para el siguiente escaneo... ---"
+            sleep 60
+          done
