@@ -1,308 +1,252 @@
 import os
-import time
-from datetime import datetime
-from zoneinfo import ZoneInfo
-import requests
+import re
+import sys
 import urllib.parse
+from datetime import datetime
+import requests
 from bs4 import BeautifulSoup
 
-try:
-    import cloudscraper
-except ImportError:
-    cloudscraper = None
-
-# Configuración de zona horaria local (Perú)
-ZONA_HORARIA_LOCAL = ZoneInfo("America/Lima")
-
-WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK", "").strip()
+WEBHOOK_URL = os.getenv(
+    "DISCORD_WEBHOOK",
+    "https://discord.com/api/webhooks/1558357066597539867/Q2JWn4-2j_5oaJ-fGYZNetTXKCHrkr5G8XFzIlBMHnXRchcc1_tXDgjbcBEU0EMPlgam"
+).strip()
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Language": "es-ES,es;q=0.9,en;q=0.8"
+    "Accept-Language": "es-MX,es;q=0.9,en-US;q=0.8",
+    "Cache-Control": "no-cache"
 }
 
-# Palabras clave ampliadas para cubrir productos TCG 30 Aniversario en Inglés
-TARGET_KEYWORDS = [
-    ["30", "booster"], ["30", "bundle"], ["30", "ultra"], ["30", "premium"],
-    ["30", "binder"], ["30", "tin"], ["30", "suelta"], ["30", "aniversario"],
-    ["30", "pack"], ["30", "caja"], ["30", "sobre"], ["30", "álbum"], ["30", "album"],
-    ["30", "poster"], ["30", "entrenador"], ["30", "élite"], ["30", "elite"],
-    ["30", "ex"], ["30", "pokeball"], ["30", "colección"], ["30", "coleccion"],
-    ["tcg", "30", "ingles"], ["cartas", "pokemon", "30"]
+PRODUCTOS_AMAZON = [
+    {"titulo": "Pokémon TCG: Ultra-Premium Collection — Night", "asin": "B0HAQTE9X", "url": "https://www.amazon.com.mx/dp/B0HAQTE9X"},
+    {"titulo": "Pokémon TCG: Ultra-Premium Collection — Day", "asin": "B02C6WYHN", "url": "https://www.amazon.com.mx/dp/B02C6WYHN"},
+    {"titulo": "Pokémon TCG: Ultra-Premium Collection (Aleatorio)", "asin": "B08VFJSTL", "url": "https://www.amazon.com.mx/dp/B08VFJSTL"},
+    {"titulo": "Pokémon TCG: Ultra-Premium Collection — Night (Alt)", "asin": "B0IZB1IJ9", "url": "https://www.amazon.com.mx/dp/B0IZB1IJ9"},
+    {"titulo": "Pokémon TCG: Ultra-Premium Collection Special", "asin": "B0H77XNKKK", "url": "https://www.amazon.com.mx/dp/B0H77XNKKK"}
 ]
 
-# Exclusiones estrictas
-EXCLUDE_KEYWORDS = [
-    "español", "espanol", "spa", "peluche", "ron", "sorpresa", "brillante",
-    "ps5", "pokeball", "buzz", "pack"
+KEYWORDS_BUSQUEDA = ["pokemon ultra premium collection", "pokemon tcg 30th ultra premium"]
+
+# Exclusión amplia de productos no deseados
+KEYWORDS_EXCLUIDAS = [
+    "charizard", "moltres", "celebrations", 
+    "fundas", "terapagos", "alfombra"
 ]
+
+PRECIO_MIN = 2000.0
+PRECIO_MAX = 4000.0
 
 hallazgos = []
 
-def generar_link_carrito(tienda, sku, url_directa, domain=""):
-    """Genera una URL directa de añadir al carrito basada en la plataforma y SKU"""
-    if not sku or sku == "N/A":
-        return url_directa
-        
-    tienda_lower = tienda.lower()
-    
-    # Shopify (Ejemplo: Ilahui)
-    if "ilahui" in tienda_lower or "shopify" in tienda_lower:
-        return f"https://ilahuiperu.com/cart/add?id={sku}&quantity=1"
-        
-    # VTEX (Ejemplo: Plaza Vea, Oechsle)
-    elif "plaza vea" in tienda_lower or "oechsle" in tienda_lower or domain:
-        base_domain = domain if domain else "https://" + urllib.parse.urlparse(url_directa).netloc
-        return f"{base_domain}/checkout/cart/add?sku={sku}&qty=1&seller=1"
-        
-    # WooCommerce / Magento (Ejemplo: Phantom, Tai Loy)
-    elif "phantom" in tienda_lower:
-        return f"{url_directa}?add-to-cart={sku}"
-        
-    return url_directa
+def limpiar_precio(texto_precio):
+    if not texto_precio:
+        return 0.0
+    m = re.search(r'[\d,]+(?:\.\d+)?', texto_precio.replace('$', '').replace('MXN', ''))
+    if m:
+        try:
+            return float(m.group(0).replace(',', ''))
+        except ValueError:
+            return 0.0
+    return 0.0
 
-def es_producto_valido(texto, url=""):
-    """Filtra productos que coincidan con las keywords y no estén en la lista de exclusión"""
-    if not texto:
+def generar_link_compra_directa(asin):
+    return f"https://www.amazon.com.mx/gp/aws/cart/add.html?ASIN.1={asin}&Quantity.1=1"
+
+def es_producto_excluido(titulo):
+    if not titulo:
         return False
-    
-    texto_lower = f"{texto} {url}".lower()
-    
-    if any(ex in texto_lower for ex in EXCLUDE_KEYWORDS):
-        return False
-        
-    if ("30" in texto_lower or "30°" in texto_lower) and any(lang in texto_lower for lang in ["ingles", "inglés", "english"]):
-        return True
+    titulo_lower = titulo.lower()
+    return any(ex in titulo_lower for ex in KEYWORDS_EXCLUIDAS)
 
-    for conjunto in TARGET_KEYWORDS:
-        if all(kw in texto_lower for kw in conjunto):
-            return True
-            
-    return False
+def registrar_hallazgo(asin, titulo, url, precio_num, tiene_stock, es_amazon):
+    if es_producto_excluido(titulo):
+        print(f"   [Excluido por Filtro] {titulo[:40]}")
+        return
 
-def registrar_producto(tienda, titulo, url_directa, tiene_stock, precio="N/A", cart_url=None, sku="N/A", domain=""):
     for h in hallazgos:
-        if h["url"] == url_directa:
+        if h["asin"] == asin:
             return
 
-    final_cart_url = cart_url or generar_link_carrito(tienda, sku, url_directa, domain)
+    en_rango_precio = PRECIO_MIN <= precio_num <= PRECIO_MAX
+    cumple_condiciones = tiene_stock and es_amazon and en_rango_precio
+    precio_str = f"MXN ${precio_num:.2f}" if precio_num > 0 else "Consultar Web"
 
     hallazgos.append({
-        "tienda": tienda,
+        "asin": asin,
         "titulo": titulo,
-        "url": url_directa,
+        "url": url,
+        "precio": precio_str,
+        "precio_num": precio_num,
         "stock": tiene_stock,
-        "precio": precio,
-        "cart_url": final_cart_url,
-        "sku": sku
+        "es_amazon": es_amazon,
+        "cumple_autocompra": cumple_condiciones,
+        "link_buy": generar_link_compra_directa(asin)
     })
 
-def enviar_alerta_stock_inmediato(item):
-    """Notificación instantánea mejorada visualmente cuando hay stock"""
+def consultar_amazon_asin(prod, session):
+    url = prod["url"]
+    asin = prod["asin"]
+    titulo_base = prod["titulo"]
+    
+    print(f"-> Escaneando ASIN {asin}...")
+    
+    try:
+        res = session.get(url, headers=HEADERS, timeout=4)
+        texto_html = res.text.lower()
+
+        if res.status_code != 200 or "no pudimos encontrar" in texto_html or "lo sentimos" in texto_html:
+            print(f"   [Página No Encontrada / 404] {asin}")
+            registrar_hallazgo(asin, titulo_base, url, 0.0, False, False)
+            return
+
+        soup = BeautifulSoup(res.text, "html.parser")
+        
+        title_el = soup.select_one("#productTitle")
+        titulo = title_el.get_text(strip=True) if title_el else titulo_base
+        
+        if es_producto_excluido(titulo):
+            print(f"   [Excluido por Keyword Prohibida] {asin}")
+            return
+
+        # Verificación de Stock Estricta
+        sin_stock_phrases = ["no disponible", "no tenemos información", "temporalmente agotado", "agotado", "out of stock"]
+        out_of_stock_el = soup.select_one("#outOfStock, #availability, .a-color-price")
+        availability_text = out_of_stock_el.get_text().lower() if out_of_stock_el else ""
+        
+        tiene_boton_compra = bool(soup.select_one("#add-to-cart-button, #buy-now-button, input[name='submit.add-to-cart']"))
+        es_sin_stock = any(phrase in availability_text or phrase in texto_html for phrase in sin_stock_phrases)
+        tiene_stock = tiene_boton_compra and not es_sin_stock
+
+        # Precio
+        price_el = soup.select_one(".a-price .a-offscreen, #priceblock_ourprice, #priceblock_dealprice, .a-price-whole")
+        precio_raw = price_el.get_text(strip=True) if price_el else "$0"
+        precio_num = limpiar_precio(precio_raw)
+        
+        seller_el = soup.select_one("#merchant-info, #tabular-buybox")
+        seller_text = seller_el.get_text().lower() if seller_el else ""
+        
+        es_vendido_por_amazon = ("amazon" in seller_text or "vendido por amazon" in seller_text) and "ghost seller" not in seller_text
+
+        registrar_hallazgo(asin, titulo, url, precio_num, tiene_stock, es_vendido_por_amazon)
+        print(f"   [Éxito ASIN] {asin} | Stock Real: {tiene_stock} | Vendido por Amazon: {es_vendido_por_amazon} | Precio: MXN ${precio_num}")
+
+    except Exception as e:
+        print(f"   [Error ASIN] {asin}: {e}")
+
+def buscar_por_palabras_clave(kw, session):
+    print(f"\n-> Buscando por Palabra Clave: '{kw}'...")
+    url_search = f"https://www.amazon.com.mx/s?k={urllib.parse.quote(kw)}"
+    try:
+        res = session.get(url_search, headers=HEADERS, timeout=4)
+        if res.status_code == 200:
+            soup = BeautifulSoup(res.text, "html.parser")
+            items = soup.select("div[data-asin]")
+            for item in items:
+                asin = item.get("data-asin", "").strip()
+                if not asin:
+                    continue
+                
+                title_el = item.select_one("h2 a span, .a-text-normal")
+                titulo = title_el.get_text(strip=True) if title_el else ""
+                
+                if es_producto_excluido(titulo):
+                    continue
+
+                if "ultra" in titulo.lower() and "premium" in titulo.lower():
+                    price_el = item.select_one(".a-price .a-offscreen, .a-price-whole")
+                    precio_raw = price_el.get_text(strip=True) if price_el else "$0"
+                    precio_num = limpiar_precio(precio_raw)
+                    url_prod = f"https://www.amazon.com.mx/dp/{asin}"
+                    
+                    registrar_hallazgo(asin, titulo, url_prod, precio_num, True, True)
+                    print(f"   [Hallazgo Keyword] ASIN: {asin} | {titulo[:40]}...")
+    except Exception as e:
+        print(f"   [Error Keyword] '{kw}': {e}")
+
+def enviar_alerta_compra_inmediata(item):
     payload = {
-        "content": f"🚨 **¡STOCK EN INGLÉS DETECTADO EN {item['tienda'].upper()}!** @everyone",
+        "content": f"🚨 **¡STOCK DETECTADO (VENDIDO POR AMAZON)!** @everyone",
         "embeds": [{
             "title": f"🟢 {item['titulo']}",
             "url": item['url'],
-            "color": 3066993,  # Verde
+            "color": 3066993,
             "fields": [
-                {"name": "📌 Estado", "value": "🟢 **DISPONIBLE**", "inline": True},
-                {"name": "🏪 Tienda", "value": f"`{item['tienda']}`", "inline": True},
-                {"name": "💵 Precio", "value": f"**{item['precio']}**", "inline": True},
-                {"name": "🔑 SKU / ID", "value": f"`{item['sku']}`", "inline": True},
-                {"name": "⚡ Acción Rápida", "value": f"[🛒 **Añadir al Carrito Directo**]({item['cart_url']}) | [🔗 **Ver en Tienda**]({item['url']})", "inline": False}
+                {"name": "Estado", "value": "🟢 CON STOCK DISPONIBLE", "inline": True},
+                {"name": "Precio", "value": str(item['precio']), "inline": True},
+                {"name": "Vendedor", "value": "Amazon (Vendido y Enviado)", "inline": True},
+                {"name": "ASIN", "value": item['asin'], "inline": True},
+                {"name": "⚡ ENLACE DE COMPRA DIRECTA", "value": f"[🛒 COMPRAR AHORA EN 1-CLICK]({item['link_buy']})", "inline": False}
             ],
-            "footer": {"text": "Sistema de Monitoreo Pokémon TCG 30th"}
+            "footer": {"text": "Monitoreo Amazon.mx 24/7"}
         }]
     }
     try:
-        res = requests.post(WEBHOOK_URL, json=payload, timeout=10)
-        print(f"Alerta enviada para {item['tienda']} -> HTTP {res.status_code}")
+        res = requests.post(WEBHOOK_URL, json=payload, timeout=5)
+        print(f"Alerta enviada a Discord -> HTTP {res.status_code}")
     except Exception as e:
-        print(f"Error enviando alerta instantánea: {e}")
+        print(f"Error enviando alerta: {e}")
 
-def enviar_reporte_programado(hora_label):
-    """Reporte consolidado visualmente mejorado (Se ejecuta con o sin stock)"""
+def enviar_reporte_diario(hora_label):
     if not hallazgos:
-        descripcion = "⚠️ *No se registraron publicaciones coincidentes en esta revisión.*"
+        desc = "No se encontraron productos coincidentes en esta ronda."
     else:
         lineas = []
         for item in hallazgos:
-            estado_icon = "🟢 **CON STOCK**" if item['stock'] else "🔴 **SIN STOCK**"
-            sku_info = f" `(SKU: {item['sku']})`" if item['sku'] != "N/A" else ""
-            
-            linea = (
-                f"• **[{item['tienda']}]** [{item['titulo']}]({item['url']})\n"
-                f"  └ Estado: {estado_icon} | Precio: **{item['precio']}**{sku_info}\n"
-                f"  └ 🛒 [Añadir Directo al Carrito]({item['cart_url']})\n"
-            )
-            lineas.append(linea)
-            
-        descripcion = "\n".join(lineas)
+            st = "🟢 CON STOCK" if item['stock'] else "🔴 SIN STOCK"
+            vendedor = "Amazon" if item['es_amazon'] else "Tercero"
+            lineas.append(f"• [{item['asin']}] [{item['titulo']}]({item['url']}) - **{st}** ({item['precio']} | {vendedor})")
+        desc = "\n".join(lineas)
 
     payload = {
-        "content": f"📊 **REPORTE CONSOLIDADO POKÉMON TCG 30TH** (`{hora_label}` PET)",
+        "content": f"📊 **REPORTE DE ESTADO AMAZON.MX ({hora_label})**",
         "embeds": [{
-            "title": "📋 Resumen General de Tiendas Rastreadas",
-            "description": descripcion,
-            "color": 3447003,  # Azul
-            "footer": {"text": f"Generado el {datetime.now(ZONA_HORARIA_LOCAL).strftime('%Y-%m-%d %I:%M %p')} PET"}
+            "title": "Consolidado de Productos Monitoreados",
+            "description": desc,
+            "color": 3447003,
+            "footer": {"text": f"Generado el {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} UTC"}
         }]
     }
     try:
-        res = requests.post(WEBHOOK_URL, json=payload, timeout=10)
-        print(f"Reporte de las {hora_label} enviado a Discord -> HTTP {res.status_code}")
+        res = requests.post(WEBHOOK_URL, json=payload, timeout=5)
+        print(f"Reporte ({hora_label}) enviado a Discord -> HTTP {res.status_code}")
     except Exception as e:
-        print(f"Error enviando reporte programado: {e}")
-
-# --- MÓDULOS DE RASTREO ---
-
-def buscar_ilahui():
-    print("\n--- [Ilahui Perú (Shopify)] ---")
-    urls_referencia = [
-        "https://ilahuiperu.com/products/pokemon-tcg-30-aniversario-binder-collection-en-ingles"
-    ]
-    
-    for url in urls_referencia:
-        try:
-            res_js = requests.get(f"{url}.js", headers=HEADERS, timeout=10)
-            if res_js.status_code == 200:
-                p_data = res_js.json()
-                titulo = p_data.get("title", "")
-                
-                if es_producto_valido(titulo, url):
-                    precio = f"S/ {p_data.get('price', 0) / 100:.2f}"
-                    variants = p_data.get("variants", [])
-                    
-                    variant_id = str(variants[0].get("id")) if variants else "N/A"
-                    tiene_stock = any(v.get("available", False) for v in variants) if variants else p_data.get("available", False)
-                    
-                    print(f"[Ilahui] {titulo} | Stock: {tiene_stock} | SKU/Variant: {variant_id}")
-                    registrar_producto("Ilahui", titulo, url, tiene_stock, precio, sku=variant_id)
-        except Exception as e:
-            print(f"[Ilahui Warning]: {e}")
-
-def buscar_vtex(nombre, domain):
-    print(f"\n--- [{nombre} (VTEX)] ---")
-    terminos = ["30 aniversario", "tcg 30"]
-    for term in terminos:
-        query = urllib.parse.quote(term)
-        api_url = f"{domain}/api/catalog_system/pub/products/search?ft={query}&_from=0&_to=30"
-        try:
-            res = requests.get(api_url, headers=HEADERS, timeout=10)
-            if res.status_code in [200, 206]:
-                productos = res.json()
-                if isinstance(productos, list):
-                    for prod in productos:
-                        nombre_p = prod.get("productName", "")
-                        link_prod = prod.get("link", domain)
-                        
-                        if es_producto_valido(nombre_p, link_prod):
-                            tiene_stock = False
-                            precio = "N/A"
-                            sku_id = "N/A"
-                            
-                            items = prod.get("items", [])
-                            if items:
-                                sku_id = str(items[0].get("itemId", "N/A"))
-                                for item in items:
-                                    for seller in item.get("sellers", []):
-                                        comm = seller.get("commertialOffer", {})
-                                        if comm.get("AvailableQuantity", 0) > 0 and comm.get("IsAvailable", False):
-                                            tiene_stock = True
-                                            sku_id = str(item.get("itemId"))
-                                            if "Price" in comm:
-                                                precio = f"S/ {comm['Price']}"
-                                            break
-                            
-                            print(f"[{nombre}] {nombre_p} | Stock: {tiene_stock} | SKU: {sku_id}")
-                            registrar_producto(nombre, nombre_p, link_prod, tiene_stock, precio, sku=sku_id, domain=domain)
-        except Exception as e:
-            print(f"[{nombre}] Error con consulta '{term}': {e}")
-
-def buscar_tailoy():
-    print("\n--- [Tai Loy] ---")
-    url_search = "https://www.tailoy.com.pe/catalogsearch/result/?q=tcg+30+aniversario"
-    try:
-        scraper = cloudscraper.create_scraper() if cloudscraper else requests
-        res = scraper.get(url_search, headers=HEADERS, timeout=12)
-        if res.status_code == 200:
-            soup = BeautifulSoup(res.text, "html.parser")
-            for prod in soup.select(".product-item, .product-item-info"):
-                nombre_el = prod.select_one(".product-item-link")
-                precio_el = prod.select_one(".price")
-                sku_el = prod.select_one("[data-product-id]")
-                
-                if nombre_el:
-                    nombre = nombre_el.get_text(strip=True)
-                    link_directo = nombre_el.get("href", "")
-                    precio = precio_el.get_text(strip=True) if precio_el else "N/A"
-                    sku_id = sku_el.get("data-product-id", "N/A") if sku_el else "N/A"
-                    
-                    if es_producto_valido(nombre, link_directo):
-                        tiene_stock = "sin stock" not in prod.text.lower() and "agotado" not in prod.text.lower()
-                        print(f"[Tai Loy] {nombre} | Stock: {tiene_stock} | SKU: {sku_id}")
-                        registrar_producto("Tai Loy", nombre, link_directo, tiene_stock, precio, sku=sku_id)
-    except Exception as e:
-        print(f"[Tai Loy] Error: {e}")
-
-def buscar_phantom():
-    print("\n--- [Phantom] ---")
-    url_search = "https://phantom.pe/?s=tcg+30+aniversario&post_type=product"
-    try:
-        scraper = cloudscraper.create_scraper() if cloudscraper else requests
-        res = scraper.get(url_search, headers=HEADERS, timeout=12)
-        if res.status_code == 200:
-            soup = BeautifulSoup(res.text, "html.parser")
-            for item in soup.select("li.product, div.product, article"):
-                titulo_el = item.select_one(".woocommerce-loop-product__title, .product-title, h2, h3")
-                link_el = item.select_one("a")
-                precio_el = item.select_one(".price, .amount")
-                add_to_cart_el = item.select_one("[data-product_id]")
-                
-                if titulo_el and link_el:
-                    titulo = titulo_el.get_text(strip=True)
-                    link_directo = link_el.get("href", "")
-                    precio = precio_el.get_text(strip=True) if precio_el else "N/A"
-                    sku_id = add_to_cart_el.get("data-product_id", "N/A") if add_to_cart_el else "N/A"
-                    
-                    if es_producto_valido(titulo, link_directo):
-                        tiene_stock = "agotado" not in item.text.lower()
-                        print(f"[Phantom] {titulo} | Stock: {tiene_stock} | SKU: {sku_id}")
-                        registrar_producto("Phantom", titulo, link_directo, tiene_stock, precio, sku=sku_id)
-    except Exception as e:
-        print(f"[Phantom] Error: {e}")
+        print(f"Error enviando reporte: {e}")
 
 if __name__ == "__main__":
-    hora_actual = datetime.now(ZONA_HORARIA_LOCAL)
-    modo = os.getenv("MODO_EJECUCION", "NORMAL")
-    
-    print(f"Ejecutando rastreo Pokémon (Inglés) en MODO: {modo}")
-    print(f"Fecha/Hora PET: {hora_actual.strftime('%Y-%m-%d %H:%M:%S')} {hora_actual.tzname()}")
-    
-    # 1. Rastrear tiendas
-    buscar_ilahui()
-    buscar_vtex("Plaza Vea", "https://www.plazavea.com.pe")
-    buscar_vtex("Oechsle", "https://www.oechsle.pe")
-    buscar_tailoy()
-    buscar_phantom()
-    
-    # 2. Alerta instantánea en Discord (solo si hay stock y no estamos en forzar reporte único)
-    stock_encontrado = False
+    hora_utc = datetime.now()
+    print(f"Iniciando escaneo Amazon.mx: {hora_utc.strftime('%Y-%m-%d %H:%M:%S')} UTC")
+
+    session = requests.Session()
+
+    for prod in PRODUCTOS_AMAZON:
+        consultar_amazon_asin(prod, session)
+
+    for kw in KEYWORDS_BUSQUEDA:
+        buscar_por_palabras_clave(kw, session)
+
+    alerta_enviada = False
     for item in hallazgos:
-        if item["stock"]:
-            stock_encontrado = True
-            print(f"¡Atención! Stock en inglés encontrado en {item['tienda']}. Enviando alerta...")
-            enviar_alerta_stock_inmediato(item)
+        if item["cumple_autocompra"]:
+            alerta_enviada = True
+            enviar_alerta_compra_inmediata(item)
 
-    if not stock_encontrado:
-        print("Sin stock disponible para productos válidos en este escaneo.")
+    if not alerta_enviada:
+        print("Sin stock vendido por Amazon dentro del rango $2,000-$4,000 MXN.")
 
-    # 3. Reporte consolidado
-    # Se envía si se fuerza desde el workflow de reportes o si es modo NORMAL a la hora correspondiente
-    if modo == "FORZAR_REPORTE" or (modo == "NORMAL" and hora_actual.hour % 3 == 0):
-        label_hora = hora_actual.strftime("%I:00 %p")
-        enviar_reporte_programado(label_hora)
+    mapa_cortes_utc = {
+        5: "12:00 AM PET",
+        9: "04:00 AM PET",
+        13: "08:00 AM PET",
+        17: "12:00 PM PET",
+        21: "04:00 PM PET",
+        1: "08:00 PM PET"
+    }
+
+    es_ejecucion_manual = "--manual" in sys.argv or len(sys.argv) > 1
+
+    if (hora_utc.hour in mapa_cortes_utc and hora_utc.minute < 10) or es_ejecucion_manual:
+        label = mapa_cortes_utc.get(hora_utc.hour, f"{hora_utc.strftime('%H:%M')} UTC (Ejecución Manual)")
+        enviar_reporte_diario(label)
 
     print("Escaneo finalizado.")
