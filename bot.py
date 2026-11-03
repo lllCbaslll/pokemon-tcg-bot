@@ -40,6 +40,7 @@ EXCLUDE_RE = re.compile(
 )
 THIRTY_RE = re.compile(r"(?<!\d)30(?!\d)")  # "30", "30th", "30°" pero no "300" ni "130"
 ENGLISH_RE = re.compile(r"ingl[eé]s|english", re.I)
+POKEMON_RE = re.compile(r"pok[eé]mon|\btcg\b", re.I)  # evita falsos positivos (PS5, Buzz Lightyear, etc.)
 
 # ---------- HTTP con reintentos ----------
 def make_session():
@@ -76,7 +77,7 @@ def es_producto_valido(texto, url=""):
     t = f"{texto} {url}".lower().replace("-", " ").replace("/", " ").replace("_", " ")
     if EXCLUDE_RE.search(t):
         return False
-    if not THIRTY_RE.search(t):
+    if not THIRTY_RE.search(t) or not POKEMON_RE.search(t):
         return False
     if ENGLISH_RE.search(t):
         return True
@@ -100,6 +101,10 @@ def post_discord(payload):
     try:
         res = SESSION.post(WEBHOOK_URL, json=payload, timeout=10)
         print(f"Discord -> HTTP {res.status_code}")
+        if res.status_code == 404:
+            print("❌ Webhook inexistente: el secret DISCORD_WEBHOOK tiene una URL borrada o incompleta.")
+        elif res.status_code >= 300:
+            print(f"❌ Discord respondió: {res.text[:200]}")
         return res.status_code < 300
     except Exception as e:
         print(f"Error enviando a Discord: {e}")
