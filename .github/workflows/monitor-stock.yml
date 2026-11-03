@@ -1,13 +1,21 @@
-name: Monitor Pokemon TCG - Stock Inmediato
+name: Monitor Stock Pokemon TCG
 
 on:
   schedule:
     - cron: '*/5 * * * *'
   workflow_dispatch:
 
+concurrency:
+  group: pokemon-monitor
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
 jobs:
   check-stock:
     runs-on: ubuntu-latest
+    timeout-minutes: 4
 
     steps:
       - name: Descargar codigo
@@ -20,12 +28,24 @@ jobs:
           cache: 'pip'
 
       - name: Instalar librerias
-        run: |
-          pip install -r requirements.txt
+        run: pip install -r requirements.txt
+
+      - name: Restaurar estado (evita alertas repetidas)
+        uses: actions/cache/restore@v4
+        with:
+          path: state.json
+          key: pokemon-state-${{ github.run_id }}
+          restore-keys: pokemon-state-
 
       - name: Ejecutar Rastreador
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
           MODO_EJECUCION: "SOLO_ALERTAS"
-        run: |
-          python bot.py
+        run: python bot.py
+
+      - name: Guardar estado
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: state.json
+          key: pokemon-state-${{ github.run_id }}
