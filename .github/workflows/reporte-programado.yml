@@ -2,15 +2,23 @@ name: Reporte Consolidado Pokemon TCG (8 al dia)
 
 on:
   schedule:
-    # Múltiplos de 3 horas en hora Perú (PET / UTC-5)
+    # Cada 3 horas en hora Perú (PET / UTC-5)
     # PET: 00, 03, 06, 09, 12, 15, 18, 21
     # UTC: 05, 08, 11, 14, 17, 20, 23, 02
     - cron: '0 2,5,8,11,14,17,20,23 * * *'
   workflow_dispatch:
 
+concurrency:
+  group: pokemon-report
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
 jobs:
   send-report:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
 
     steps:
       - name: Descargar codigo
@@ -23,12 +31,10 @@ jobs:
           cache: 'pip'
 
       - name: Instalar librerias
-        run: |
-          pip install -r requirements.txt
+        run: pip install -r requirements.txt
 
       - name: Generar Reporte Consolidado
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
           MODO_EJECUCION: "FORZAR_REPORTE"
-        run: |
-          python bot.py
+        run: python bot.py
