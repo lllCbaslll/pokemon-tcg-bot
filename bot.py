@@ -21,6 +21,7 @@ WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK", "").strip()
 STATE_FILE = Path(os.getenv("STATE_FILE", "state.json"))
 TZ = ZoneInfo("America/Lima")  # Hora Perú (UTC-5)
 REPORT_HOURS = (8, 13, 20)     # Horas Perú en las que se envía el reporte
+MODO = os.getenv("MODO_EJECUCION", "COMPLETO").strip().upper()  # SOLO_ALERTAS | FORZAR_REPORTE | REPORTE | COMPLETO
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
@@ -264,19 +265,27 @@ def main():
     buscar_tailoy()
     buscar_phantom()
 
-    # Alerta solo cuando pasa de SIN stock -> CON stock (evita spam cada 10 min)
-    for item in hallazgos:
-        antes = state["stock"].get(item["url"], False)
-        if item["stock"] and not antes:
-            print(f"¡Stock nuevo en {item['tienda']}!")
-            enviar_alerta_stock_inmediato(item)
-        state["stock"][item["url"]] = item["stock"]
+    es_reporte = MODO in ("FORZAR_REPORTE", "REPORTE")
 
-    # Reportes: tolerante a retrasos de GitHub Actions (cualquier minuto de la hora)
-    slot = f"{ahora:%Y-%m-%d}-{ahora.hour:02d}"
-    if ahora.hour in REPORT_HOURS and slot not in state["reports"]:
-        if enviar_reporte_programado(f"{ahora.hour:02d}:00"):
-            state["reports"].append(slot)
+    # Alertas: solo cuando pasa de SIN stock -> CON stock (evita spam).
+    # En modos de reporte NO se toca el estado, para no "tragarse" alertas
+    # que le corresponden al monitor de cada 5 minutos.
+    if not es_reporte:
+        for item in hallazgos:
+            antes = state["stock"].get(item["url"], False)
+            if item["stock"] and not antes:
+                print(f"¡Stock nuevo en {item['tienda']}!")
+                enviar_alerta_stock_inmediato(item)
+            state["stock"][item["url"]] = item["stock"]
+
+    # Reportes
+    if MODO == "FORZAR_REPORTE":
+        enviar_reporte_programado(f"{ahora:%H:%M}")
+    elif MODO != "SOLO_ALERTAS":
+        slot = f"{ahora:%Y-%m-%d}-{ahora.hour:02d}"
+        if ahora.hour in REPORT_HOURS and slot not in state["reports"]:
+            if enviar_reporte_programado(f"{ahora.hour:02d}:00"):
+                state["reports"].append(slot)
 
     save_state(state)
     print("Escaneo finalizado.")
