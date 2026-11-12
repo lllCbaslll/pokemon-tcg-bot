@@ -52,6 +52,11 @@ TIENDAS_TCG = [
     ("Koko", "https://kokostation.com"),
 ]
 
+# URLs directas de respaldo en Phantom (Magento)
+PHANTOM_URLS_FIJAS = [
+    "https://phantom.pe/pokemon-tcg-30th-celebration-battle-deck-umbreon-espeon-ex-ingles.html",
+]
+
 # Mapeo de nombres cortos para Discord y logs
 TIENDA_CORTA = {
     "Koko Station": "Koko",
@@ -92,7 +97,7 @@ EXCLUDE_RE = re.compile(
     r"espa[ñn]ol|\bspa\b|spanish|japon[eé]s|japanese|peluche|\bron\b|sorpresa|brillante|pok[eé]\s*ball|figura|takara|vaso|funda|protector|sleeve|perfect\s*order|pitch\s*black|ascended\s*heroes",
     re.I,
 )
-THIRTY_RE = re.compile(r"(?<!\d)30(?!\d)")
+THIRTY_RE = re.compile(r"(?<!\d)30(?:th|vo|º|°)?(?!\d)", re.I)
 ENGLISH_RE = re.compile(r"ingl[eé]s|english", re.I)
 POKEMON_RE = re.compile(r"pok[eé]mon|\btcg\b", re.I)
 
@@ -528,35 +533,82 @@ def _ejecutar_html_tcg(nombre, domain):
         registrar_producto(*item)
 
 
+def _parsear_detalle_phantom(url):
+    try:
+        r = browser_get(
+            url,
+            headers={**BROWSER_HEADERS, "Referer": "https://phantom.pe/", "Sec-Fetch-Dest": "document", "Sec-Fetch-Mode": "navigate"},
+            timeout=12,
+        )
+        if r.status_code != 200:
+            return None
+        soup = BeautifulSoup(r.text, "html.parser")
+        h1 = soup.select_one("h1.page-title span, h1.page-title, h1")
+        titulo = h1.get_text(strip=True) if h1 else ""
+        if not titulo or not es_producto_valido(titulo, url):
+            return None
+
+        pr = soup.select_one(".product-info-price .price, .price-wrapper .price, .price")
+        precio = pr.get_text(strip=True) if pr else "N/A"
+
+        stock_el = soup.select_one(".stock.available, #product-addtocart-button")
+        out_el = soup.select_one(".stock.unavailable")
+        txt_box = (soup.select_one(".product-info-main") or soup).get_text(" ", strip=True).lower()
+
+        stock = (
+            (stock_el is not None and out_el is None)
+            and ("agotado" not in txt_box)
+            and ("sin stock" not in txt_box)
+            and ("out of stock" not in txt_box)
+        )
+
+        form = soup.select_one("#product_addtocart_form")
+        prod_id = form.get("data-product-sku") if form else "N/A"
+        return ("Phantom", titulo, url, stock, precio, url, prod_id or "N/A")
+    except Exception:
+        return None
+
+
 def buscar_phantom():
     encontrados = []
-    for term in ["tcg 30 aniversario", "pokemon 30"]:
+    urls_vistas = set()
+
+    for term in ["pokemon tcg 30", "30th celebration", "pokemon 30"]:
         q = urllib.parse.quote_plus(term)
-        url = f"https://phantom.pe/?s={q}&post_type=product"
+        url = f"https://phantom.pe/catalogsearch/result/?q={q}"
         try:
-            r = browser_get(url, headers={**BROWSER_HEADERS, "Referer": "https://phantom.pe/"}, timeout=12)
+            r = browser_get(
+                url,
+                headers={**BROWSER_HEADERS, "Referer": "https://phantom.pe/", "Sec-Fetch-Dest": "document", "Sec-Fetch-Mode": "navigate"},
+                timeout=12,
+            )
             if r.status_code != 200:
                 continue
             soup = BeautifulSoup(r.text, "html.parser")
-            for item in soup.select("li.product, div.product, article.product"):
-                t = item.select_one(".woocommerce-loop-product__title, .product-title, h2, h3")
-                a = item.select_one("a")
-                if not (t and a):
+            for prod in soup.select(".product-item, .product-item-info, li.product"):
+                el = prod.select_one(".product-item-link, .product-item-name a, a.product-item-photo")
+                if not el:
                     continue
-                titulo, link = t.get_text(strip=True), a.get("href", "")
-                if not es_producto_valido(titulo, link):
+                link = el.get("href", "")
+                titulo = el.get_text(strip=True) or el.get("title", "")
+                if not titulo or not link or not es_producto_valido(titulo, link):
                     continue
-                pr = item.select_one(".price ins .amount, .price .amount, .price")
+                urls_vistas.add(link.split("?")[0])
+                pr = prod.select_one(".price")
                 precio = pr.get_text(strip=True) if pr else "N/A"
-                txt = item.get_text(" ", strip=True).lower()
-                classes = " ".join(item.get("class", [])).lower()
-                stock = ("outofstock" not in classes) and ("agotado" not in txt) and ("sin stock" not in txt)
-                add_btn = item.select_one("a[data-product_id]")
-                sku = add_btn.get("data-product_id") if add_btn else "N/A"
-                cart = f"https://phantom.pe/?add-to-cart={sku}" if (stock and sku != "N/A") else link
-                encontrados.append(("Phantom", titulo, link, stock, precio, cart, sku))
+                txt = prod.get_text(" ", strip=True).lower()
+                has_btn = prod.select_one("button.tocart, form[data-role='tocart-form']") is not None
+                stock = has_btn and ("agotado" not in txt) and ("sin stock" not in txt) and ("unavailable" not in txt)
+                encontrados.append(("Phantom", titulo, link, stock, precio, link, "N/A"))
         except Exception:
             pass
+
+    for fixed_url in PHANTOM_URLS_FIJAS:
+        if fixed_url.split("?")[0] not in urls_vistas:
+            detalle = _parsear_detalle_phantom(fixed_url)
+            if detalle:
+                encontrados.append(detalle)
+
     DEEP_RESULTS_CACHE["Phantom"] = encontrados
     for item in encontrados:
         registrar_producto(*item)
@@ -774,7 +826,6 @@ def ejecutar_ciclo(num_ciclo=1):
         actuales_con_stock = [it for it in hallazgos if it["stock"]]
         hallazgos_por_key = {it["url_key"]: it for it in hallazgos}
 
-        # Actualiza metadatos y detecta productos que pasaron de False -> True o True -> False
         for item in hallazgos:
             key = item["url_key"]
             antes = state["stock"].get(key, False)
@@ -789,7 +840,6 @@ def ejecutar_ciclo(num_ciclo=1):
             elif not item["stock"] and antes:
                 recien_agotados.append(item)
 
-        # Solo en escaneo profundo: si un producto que tenía stock desapareció de la tienda, marcarlo agotado
         if es_profundo:
             for key, estaba_en_stock in list(state["stock"].items()):
                 if estaba_en_stock and key not in hallazgos_por_key:
@@ -799,7 +849,6 @@ def ejecutar_ciclo(num_ciclo=1):
         firma_actual = sorted(it["url_key"] for it in actuales_con_stock)
         firma_anterior = sorted(state.get("last_stock_list", []))
 
-        # Solo envía si hubo entrada nueva o agotamiento Y la lista resultante cambió
         if firma_actual != firma_anterior:
             if nuevos_en_stock:
                 if enviar_alerta_stock_nuevo(actuales_con_stock):
