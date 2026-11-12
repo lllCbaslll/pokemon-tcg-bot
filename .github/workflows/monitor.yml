@@ -52,6 +52,7 @@ jobs:
       - name: Ejecutar Rastreador
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          PROXY_URL: ${{ secrets.PROXY_URL }}
           MODO_EJECUCION: ${{ github.event.inputs.modo || 'COMPLETO' }}
           REPORT_HOURS: "8,12,16,20"
         run: python bot.py
