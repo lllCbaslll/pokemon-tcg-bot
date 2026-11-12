@@ -47,7 +47,6 @@ DEEP_SCAN_EVERY = int(os.getenv("DEEP_SCAN_EVERY", "4"))
 MAX_RUNTIME_SECONDS = int(os.getenv("MAX_RUNTIME_SECONDS", "0"))
 
 # Tiendas especializadas TCG con dominios activos verificados
-# Puedes agregar más aquí siempre que el dominio exista y cargue en navegador
 TIENDAS_TCG = [
     ("Koko Station", "https://kokostation.com"),
 ]
@@ -198,23 +197,42 @@ def post_discord(payload):
         print(f"Error enviando a Discord: {e}")
         return False
 
-def enviar_alerta_stock_inmediato(item):
-    return post_discord({
-        "content": f"🚨 **¡STOCK EN INGLÉS DETECTADO EN {item['tienda'].upper()}!** @everyone",
-        "allowed_mentions": {"parse": ["everyone"]},
-        "embeds": [{
-            "title": f"🟢 {item['titulo']}",
-            "url": item["url"],
+def enviar_alerta_stock_consolidado(items):
+    """Envía un único embed con todos los productos que acaban de entrar en stock."""
+    if not items:
+        return False
+
+    ordenados = sorted(items, key=lambda x: (x["tienda"], x["titulo"]))
+    bloques = []
+    actual = ""
+
+    for it in ordenados:
+        fila = f"[{it['tienda']}] | [{it['titulo']}]({it['url']}) | {it['precio']} | [🛒 Añadir al carrito]({it['cart_url']})\n"
+        if len(actual) + len(fila) > 3800:
+            bloques.append(actual.strip())
+            actual = fila
+        else:
+            actual += fila
+
+    if actual.strip():
+        bloques.append(actual.strip())
+
+    embeds = []
+    for idx, desc in enumerate(bloques[:10]):
+        embed = {
+            "description": desc,
             "color": 3066993,
-            "fields": [
-                {"name": "Estado", "value": "🟢 CON STOCK DISPONIBLE", "inline": True},
-                {"name": "Tienda", "value": item["tienda"], "inline": True},
-                {"name": "Precio", "value": str(item["precio"]), "inline": True},
-                {"name": "SKU / Variant ID", "value": str(item["sku"]), "inline": True},
-                {"name": "🛒 Comprar", "value": f"[Ir / Añadir al Carrito]({item['cart_url']})", "inline": False},
-            ],
-            "footer": {"text": f"Detectado: {datetime.now(TZ).strftime('%H:%M:%S')} PET"},
-        }],
+        }
+        if idx == len(bloques[:10]) - 1:
+            embed["footer"] = {
+                "text": f"Detectado: {datetime.now(TZ).strftime('%d/%m/%Y %H:%M:%S')} PET"
+            }
+        embeds.append(embed)
+
+    return post_discord({
+        "content": "🚨¡STOCK EN INGLÉS DETECTADO!🟢@everyone",
+        "allowed_mentions": {"parse": ["everyone"]},
+        "embeds": embeds,
     })
 
 def enviar_reporte_programado(hora_label):
@@ -648,17 +666,22 @@ def ejecutar_ciclo(num_ciclo=1):
 
     state = load_state()
 
-    # 1) Alerta inmediata SOLO cuando un producto pasa de SIN STOCK -> CON STOCK
+    # 1) Alerta inmediata consolidada SOLO cuando hay productos nuevos en stock
     if not es_reporte_forzado:
+        nuevos_en_stock = []
         for item in hallazgos:
             key = item["url_key"]
             antes = state["stock"].get(key, False)
             if item["stock"] and not antes:
                 print(f"🚨 ¡STOCK NUEVO en {item['tienda']}: {item['titulo']}!")
-                if enviar_alerta_stock_inmediato(item):
-                    state["stock"][key] = True
+                nuevos_en_stock.append(item)
             elif not item["stock"]:
                 state["stock"][key] = False
+
+        if nuevos_en_stock:
+            if enviar_alerta_stock_consolidado(nuevos_en_stock):
+                for item in nuevos_en_stock:
+                    state["stock"][item["url_key"]] = True
 
     # 2) Reportes consolidados: únicamente 1 vez en cada hora de REPORT_HOURS (08, 12, 16, 20)
     if es_reporte_forzado:
@@ -681,7 +704,6 @@ def main():
         print("❌ Falta DISCORD_WEBHOOK")
         sys.exit(1)
 
-    # Si es ejecución única o reporte forzado manual, ejecuta 1 sola vez y termina (nunca en bucle)
     if LOOP_SECONDS <= 0 or MODO in ("FORZAR_REPORTE", "REPORTE"):
         ejecutar_ciclo(1)
         return
