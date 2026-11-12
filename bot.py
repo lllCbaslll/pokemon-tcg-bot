@@ -2,9 +2,12 @@ import json
 import os
 import re
 import sys
+import time
 import urllib.parse
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
+from threading import Lock
 from zoneinfo import ZoneInfo
 
 import requests
@@ -17,11 +20,24 @@ try:
 except ImportError:
     cloudscraper = None
 
+# ---------- Configuración ----------
 WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK", "").strip()
 STATE_FILE = Path(os.getenv("STATE_FILE", "state.json"))
 TZ = ZoneInfo("America/Lima")  # Hora Perú (UTC-5)
-REPORT_HOURS = (8, 13, 20)     # Horas Perú en las que se envía el reporte
-MODO = os.getenv("MODO_EJECUCION", "COMPLETO").strip().upper()  # SOLO_ALERTAS | FORZAR_REPORTE | REPORTE | COMPLETO
+
+# 4 reportes al día por defecto: 08:00, 12:00, 16:00 y 20:00 (Hora Perú)
+REPORT_HOURS = tuple(
+    int(h.strip())
+    for h in os.getenv("REPORT_HOURS", "8,12,16,20").split(",")
+    if h.strip().isdigit()
+)
+
+# SOLO_ALERTAS | FORZAR_REPORTE | REPORTE | COMPLETO
+MODO = os.getenv("MODO_EJECUCION", "COMPLETO").strip().upper()
+
+# 0 = ejecución única (ideal para GitHub Actions / cron cada 5 min)
+# 300 = bucle infinito cada 5 minutos (ideal para VPS / Docker / PC local)
+LOOP_SECONDS = int(os.getenv("LOOP_SECONDS", "0"))
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
@@ -38,14 +54,19 @@ TARGET_KEYWORDS = [
 EXCLUDE_RE = re.compile(
     r"espa[ñn]ol|\bspa\b|spanish|peluche|\bron\b|sorpresa|brillante", re.I
 )
-THIRTY_RE = re.compile(r"(?<!\d)30(?!\d)")  # "30", "30th", "30°" pero no "300" ni "130"
+THIRTY_RE = re.compile(r"(?<!\d)30(?!\d)")
 ENGLISH_RE = re.compile(r"ingl[eé]s|english", re.I)
-POKEMON_RE = re.compile(r"pok[eé]mon|\btcg\b", re.I)  # evita falsos positivos (PS5, Buzz Lightyear, etc.)
+POKEMON_RE = re.compile(r"pok[eé]mon|\btcg\b", re.I)
 
 # ---------- HTTP con reintentos ----------
 def make_session():
     s = requests.Session()
-    retry = Retry(total=3, backoff_factor=1.5, status_forcelist=(429, 500, 502, 503, 504))
+    retry = Retry(
+        total=2,
+        backoff_factor=1.0,
+        status_forcelist=(429, 500, 502, 503, 504),
+        allowed_methods=("GET", "POST"),
+    )
     s.mount("https://", HTTPAdapter(max_retries=retry))
     s.mount("http://", HTTPAdapter(max_retries=retry))
     s.headers.update(HEADERS)
@@ -54,20 +75,25 @@ def make_session():
 SESSION = make_session()
 SCRAPER = cloudscraper.create_scraper() if cloudscraper else SESSION
 
-# ---------- Estado persistente (anti-spam) ----------
+# ---------- Estado persistente ----------
 def load_state():
     try:
-        return json.loads(STATE_FILE.read_text(encoding="utf-8"))
+        data = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+        data.setdefault("stock", {})
+        data.setdefault("reports", [])
+        return data
     except Exception:
         return {"stock": {}, "reports": []}
 
 def save_state(state):
-    state["reports"] = state.get("reports", [])[-30:]
-    STATE_FILE.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    state["reports"] = state.get("reports", [])[-40:]
+    STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    tmp_file = STATE_FILE.with_suffix(".tmp")
+    tmp_file.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp_file.replace(STATE_FILE)
 
-# ---------- Filtros ----------
+# ---------- Filtros y registro thread-safe ----------
 def _kw_match(kw, texto):
-    # Palabras cortas: palabra completa. Largas: prefijo de palabra.
     pat = rf"\b{re.escape(kw)}\b" if len(kw) <= 3 else rf"\b{re.escape(kw)}"
     return re.search(pat, texto) is not None
 
@@ -84,14 +110,23 @@ def es_producto_valido(texto, url=""):
     return any(all(_kw_match(k, t) for k in conj) for conj in TARGET_KEYWORDS)
 
 hallazgos = []
+hallazgos_lock = Lock()
 
 def registrar_producto(tienda, titulo, url, stock, precio="N/A", cart_url=None, sku="N/A"):
-    if any(h["url"] == url for h in hallazgos):
-        return
-    hallazgos.append({
-        "tienda": tienda, "titulo": titulo, "url": url, "stock": stock,
-        "precio": precio, "cart_url": cart_url or url, "sku": sku,
-    })
+    url_limpia = url.split("?")[0].rstrip("/")
+    with hallazgos_lock:
+        if any(h["url_key"] == url_limpia for h in hallazgos):
+            return
+        hallazgos.append({
+            "tienda": tienda,
+            "titulo": titulo,
+            "url": url,
+            "url_key": url_limpia,
+            "stock": bool(stock),
+            "precio": precio,
+            "cart_url": cart_url or url,
+            "sku": sku,
+        })
 
 # ---------- Discord ----------
 def post_discord(payload):
@@ -100,9 +135,14 @@ def post_discord(payload):
         return False
     try:
         res = SESSION.post(WEBHOOK_URL, json=payload, timeout=10)
+        if res.status_code == 429:
+            retry_after = float(res.json().get("retry_after", 2))
+            time.sleep(min(retry_after, 5))
+            res = SESSION.post(WEBHOOK_URL, json=payload, timeout=10)
+
         print(f"Discord -> HTTP {res.status_code}")
         if res.status_code == 404:
-            print("❌ Webhook inexistente: el secret DISCORD_WEBHOOK tiene una URL borrada o incompleta.")
+            print("❌ Webhook inexistente: revisa DISCORD_WEBHOOK.")
         elif res.status_code >= 300:
             print(f"❌ Discord respondió: {res.text[:200]}")
         return res.status_code < 300
@@ -125,36 +165,59 @@ def enviar_alerta_stock_inmediato(item):
                 {"name": "SKU / Variant ID", "value": str(item["sku"]), "inline": True},
                 {"name": "🛒 Comprar", "value": f"[Añadir al Carrito]({item['cart_url']})", "inline": False},
             ],
+            "footer": {"text": f"Detectado: {datetime.now(TZ).strftime('%H:%M:%S')} PET"},
         }],
     })
 
 def enviar_reporte_programado(hora_label):
     if not hallazgos:
-        descripcion = "No se encontraron publicaciones activas coincidentes en inglés."
-    else:
-        lineas = []
-        for it in hallazgos:
-            estado = "🟢 CON STOCK" if it["stock"] else "🔴 SIN STOCK"
-            cart = f" | [🛒 Carrito]({it['cart_url']})" if it["stock"] else ""
-            lineas.append(f"• **[{it['tienda']}]** [{it['titulo']}]({it['url']}) - **{estado}** ({it['precio']}){cart}")
-        descripcion = "\n".join(lineas)[:4000]
-    return post_discord({
-        "content": f"📊 **REPORTE POKÉMON TCG 30TH (INGLÉS) - {hora_label} PET**",
-        "embeds": [{
+        embeds = [{
             "title": "Consolidado de Tiendas Rastreadas",
-            "description": descripcion,
+            "description": "No se encontraron publicaciones activas coincidentes en inglés.",
             "color": 3447003,
             "footer": {"text": f"Generado el {datetime.now(TZ).strftime('%Y-%m-%d %H:%M:%S')} (hora Perú)"},
-        }],
+        }]
+    else:
+        # Ordena primero los que tienen stock
+        ordenados = sorted(hallazgos, key=lambda x: (not x["stock"], x["tienda"], x["titulo"]))
+        bloques = []
+        actual = ""
+        for it in ordenados:
+            estado = "🟢 CON STOCK" if it["stock"] else "🔴 SIN STOCK"
+            cart = f" | [🛒 Carrito]({it['cart_url']})" if it["stock"] else ""
+            linea = f"• **[{it['tienda']}]** [{it['titulo']}]({it['url']}) - **{estado}** ({it['precio']}){cart}\n"
+            if len(actual) + len(linea) > 3800:
+                bloques.append(actual.strip())
+                actual = linea
+            else:
+                actual += linea
+        if actual.strip():
+            bloques.append(actual.strip())
+
+        embeds = []
+        for idx, desc in enumerate(bloques[:10]):
+            embed = {
+                "title": "Consolidado de Tiendas Rastreadas" if idx == 0 else f"Consolidado (Parte {idx + 1})",
+                "description": desc,
+                "color": 3447003,
+            }
+            if idx == len(bloques[:10]) - 1:
+                embed["footer"] = {
+                    "text": f"Total: {len(ordenados)} productos | {datetime.now(TZ).strftime('%Y-%m-%d %H:%M:%S')} PET"
+                }
+            embeds.append(embed)
+
+    return post_discord({
+        "content": f"📊 **REPORTE POKÉMON TCG 30TH (INGLÉS) - {hora_label} PET**",
+        "embeds": embeds,
     })
 
 # ---------- Scrapers ----------
 def buscar_ilahui():
-    print("\n--- [Ilahui Perú (Shopify)] ---")
     urls = ["https://ilahuiperu.com/products/pokemon-tcg-30-aniversario-binder-collection-en-ingles"]
     for url in urls:
         try:
-            r = SESSION.get(f"{url}.js", timeout=12)
+            r = SESSION.get(f"{url}.js", timeout=10)
             if r.status_code != 200:
                 continue
             p = r.json()
@@ -172,12 +235,11 @@ def buscar_ilahui():
             print(f"[Ilahui] Error: {e}")
 
 def buscar_vtex(nombre, domain):
-    print(f"\n--- [{nombre} (VTEX)] ---")
     for term in ["30 aniversario", "tcg 30"]:
         q = urllib.parse.quote(term)
         api = f"{domain}/api/catalog_system/pub/products/search?ft={q}&_from=0&_to=30"
         try:
-            r = SESSION.get(api, timeout=12)
+            r = SESSION.get(api, timeout=10)
             if r.status_code not in (200, 206):
                 continue
             productos = r.json()
@@ -207,10 +269,9 @@ def buscar_vtex(nombre, domain):
             print(f"[{nombre}] Error con '{term}': {e}")
 
 def buscar_tailoy():
-    print("\n--- [Tai Loy] ---")
     url = "https://www.tailoy.com.pe/catalogsearch/result/?q=tcg+30+aniversario"
     try:
-        r = SCRAPER.get(url, headers=HEADERS, timeout=15)
+        r = SCRAPER.get(url, headers=HEADERS, timeout=12)
         if r.status_code != 200:
             print(f"[Tai Loy] HTTP {r.status_code}")
             return
@@ -231,10 +292,9 @@ def buscar_tailoy():
         print(f"[Tai Loy] Error: {e}")
 
 def buscar_phantom():
-    print("\n--- [Phantom] ---")
     url = "https://phantom.pe/?s=tcg+30+aniversario&post_type=product"
     try:
-        r = SCRAPER.get(url, headers=HEADERS, timeout=15)
+        r = SCRAPER.get(url, headers=HEADERS, timeout=12)
         if r.status_code != 200:
             print(f"[Phantom] HTTP {r.status_code}")
             return
@@ -254,36 +314,42 @@ def buscar_phantom():
     except Exception as e:
         print(f"[Phantom] Error: {e}")
 
-# ---------- Main ----------
-def main():
+# ---------- Ejecución de un ciclo ----------
+def ejecutar_ciclo():
+    hallazgos.clear()
     ahora = datetime.now(TZ)
-    print(f"Rastreo Pokémon (Inglés): {ahora:%Y-%m-%d %H:%M:%S} hora Perú")
-    if not WEBHOOK_URL:
-        print("❌ Falta el secret DISCORD_WEBHOOK")
-        sys.exit(1)
+    print(f"\n=== Rastreo Pokémon (Inglés): {ahora:%Y-%m-%d %H:%M:%S} PET ===")
 
     state = load_state()
 
-    buscar_ilahui()
-    buscar_vtex("Plaza Vea", "https://www.plazavea.com.pe")
-    buscar_vtex("Oechsle", "https://www.oechsle.pe")
-    buscar_tailoy()
-    buscar_phantom()
+    tareas = [
+        buscar_ilahui,
+        lambda: buscar_vtex("Plaza Vea", "https://www.plazavea.com.pe"),
+        lambda: buscar_vtex("Oechsle", "https://www.oechsle.pe"),
+        buscar_tailoy,
+        buscar_phantom,
+    ]
+    with ThreadPoolExecutor(max_workers=5) as pool:
+        futuros = [pool.submit(fn) for fn in tareas]
+        for f in futuros:
+            f.result()
 
     es_reporte = MODO in ("FORZAR_REPORTE", "REPORTE")
 
-    # Alertas: solo cuando pasa de SIN stock -> CON stock (evita spam).
-    # En modos de reporte NO se toca el estado, para no "tragarse" alertas
-    # que le corresponden al monitor de cada 5 minutos.
+    # Alertas inmediatas (solo transición False -> True)
     if not es_reporte:
         for item in hallazgos:
-            antes = state["stock"].get(item["url"], False)
+            key = item["url_key"]
+            antes = state["stock"].get(key, False)
             if item["stock"] and not antes:
-                print(f"¡Stock nuevo en {item['tienda']}!")
-                enviar_alerta_stock_inmediato(item)
-            state["stock"][item["url"]] = item["stock"]
+                print(f"🚨 ¡Stock nuevo en {item['tienda']}: {item['titulo']}!")
+                if enviar_alerta_stock_inmediato(item):
+                    state["stock"][key] = True
+            elif not item["stock"]:
+                # Solo baja a False cuando confirmamos que la página cargó y dice sin stock
+                state["stock"][key] = False
 
-    # Reportes
+    # Reporte consolidado (4 veces al día: 08:00, 12:00, 16:00, 20:00 PET)
     if MODO == "FORZAR_REPORTE":
         enviar_reporte_programado(f"{ahora:%H:%M}")
     elif MODO != "SOLO_ALERTAS":
@@ -293,7 +359,27 @@ def main():
                 state["reports"].append(slot)
 
     save_state(state)
-    print("Escaneo finalizado.")
+    print(f"Escaneo finalizado ({len(hallazgos)} productos evaluados).")
+
+def main():
+    if not WEBHOOK_URL:
+        print("❌ Falta el secret DISCORD_WEBHOOK")
+        sys.exit(1)
+
+    if LOOP_SECONDS <= 0:
+        ejecutar_ciclo()
+        return
+
+    print(f"Modo demonio activo: ejecutando cada {LOOP_SECONDS}s...")
+    while True:
+        inicio = time.monotonic()
+        try:
+            ejecutar_ciclo()
+        except Exception as e:
+            print(f"❌ Error inesperado en el ciclo: {e}")
+        transcurrido = time.monotonic() - inicio
+        espera = max(5.0, LOOP_SECONDS - transcurrido)
+        time.sleep(espera)
 
 if __name__ == "__main__":
     main()
