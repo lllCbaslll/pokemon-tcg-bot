@@ -673,7 +673,7 @@ def ejecutar_ciclo(num_ciclo=1):
             key = item["url_key"]
             antes = state["stock"].get(key, False)
             if item["stock"] and not antes:
-                print(f"🚨 ¡STOCK NUEVO en {item['tienda']}: {item['titulo']}!")
+                print(f"STOCK {item['tienda']}: {item['titulo']}")
                 nuevos_en_stock.append(item)
             elif not item["stock"]:
                 state["stock"][key] = False
