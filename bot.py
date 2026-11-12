@@ -89,7 +89,7 @@ TARGET_KEYWORDS = [
 ]
 
 EXCLUDE_RE = re.compile(
-    r"espa[ñn]ol|\bspa\b|spanish|japon[eé]s|japanese|peluche|\bron\b|sorpresa|brillante|pok[eé]\s*ball|figura|takara|vaso|funda|protector|sleeve",
+    r"espa[ñn]ol|\bspa\b|spanish|japon[eé]s|japanese|peluche|\bron\b|sorpresa|brillante|pok[eé]\s*ball|figura|takara|vaso|funda|protector|sleeve|perfect\s*order|pitch\s*black|ascended\s*heroes",
     re.I,
 )
 THIRTY_RE = re.compile(r"(?<!\d)30(?!\d)")
@@ -139,10 +139,17 @@ def load_state():
     try:
         data = json.loads(STATE_FILE.read_text(encoding="utf-8"))
         data.setdefault("stock", {})
+        data.setdefault("items_meta", {})
+        data.setdefault("last_stock_list", [])
         data.setdefault("reports", [])
         return data
     except Exception:
-        return {"stock": {}, "reports": []}
+        return {
+            "stock": {},
+            "items_meta": {},
+            "last_stock_list": [],
+            "reports": [],
+        }
 
 def save_state(state):
     state["reports"] = state.get("reports", [])[-40:]
@@ -237,11 +244,7 @@ def _dividir_en_bloques(lineas, max_chars=3800):
         bloques.append(actual.strip())
     return bloques
 
-def enviar_alerta_stock_consolidado(items):
-    """Envía los productos nuevos en stock agrupados por tienda en un cuadro compacto."""
-    if not items:
-        return False
-
+def _formatear_agrupado_stock(items):
     por_tienda = defaultdict(list)
     for it in sorted(items, key=lambda x: (x["tienda"], x["titulo"])):
         por_tienda[it["tienda"]].append(it)
@@ -251,9 +254,16 @@ def enviar_alerta_stock_consolidado(items):
         lineas.append(f"**[{tienda}]**\n")
         for it in prods:
             nom = recortar_texto(it["titulo"], max_len=50)
-            lineas.append(f"• [{nom}]({it['url']}) | {it['precio']} | [🛒]({it['cart_url']})\n")
+            lineas.append(f"• [{nom}]({it['url']}) | {it['precio']} | [🛒 Carrito]({it['cart_url']})\n")
         lineas.append("\n")
+    return lineas
 
+def enviar_alerta_stock_nuevo(items_activos):
+    """Notifica con @everyone cuando entra stock nuevo mostrando toda la lista activa agrupada por tienda."""
+    if not items_activos:
+        return False
+
+    lineas = _formatear_agrupado_stock(items_activos)
     bloques = _dividir_en_bloques(lineas, max_chars=3800)
     exito = True
 
@@ -262,7 +272,7 @@ def enviar_alerta_stock_consolidado(items):
             "description": desc,
             "color": 3066993,
             "footer": {
-                "text": f"Detectado: {datetime.now(TZ).strftime('%d/%m/%Y %H:%M:%S')} PET"
+                "text": f"Stock activo: {len(items_activos)} producto(s) | {datetime.now(TZ).strftime('%d/%m/%Y %H:%M:%S')} PET"
             },
         }
         payload = {
@@ -277,12 +287,54 @@ def enviar_alerta_stock_consolidado(items):
 
     return exito
 
+def enviar_actualizacion_agotados(agotados, items_activos):
+    """Informa cuando uno o más productos se quedaron sin stock y muestra la lista actualizada."""
+    lineas = ["**🔴 Se quedaron sin stock:**\n"]
+    por_tienda_ago = defaultdict(list)
+    for it in sorted(agotados, key=lambda x: (x["tienda"], x["titulo"])):
+        por_tienda_ago[it["tienda"]].append(it)
+
+    for tienda, prods in por_tienda_ago.items():
+        lineas.append(f"**[{tienda}]**\n")
+        for it in prods:
+            nom = recortar_texto(it["titulo"], max_len=50)
+            lineas.append(f"• ~~[{nom}]({it['url']})~~\n")
+
+    lineas.append("\n")
+    if items_activos:
+        lineas.append("**🟢 Lista actualizada con stock disponible:**\n")
+        lineas.extend(_formatear_agrupado_stock(items_activos))
+    else:
+        lineas.append("**⚪ Actualmente no quedan productos con stock disponible.**\n")
+
+    bloques = _dividir_en_bloques(lineas, max_chars=3800)
+    exito = True
+
+    for idx, desc in enumerate(bloques):
+        embed = {
+            "description": desc,
+            "color": 15158332 if not items_activos else 15844367,
+            "footer": {
+                "text": f"Actualizado: {datetime.now(TZ).strftime('%d/%m/%Y %H:%M:%S')} PET"
+            },
+        }
+        payload = {
+            "content": "📉 **ACTUALIZACIÓN DE STOCK (AGOTADOS)**" if idx == 0 else None,
+            "embeds": [embed],
+        }
+        if not post_discord(payload):
+            exito = False
+        if len(bloques) > 1:
+            time.sleep(0.8)
+
+    return exito
+
 def enviar_reporte_programado(hora_label):
     if not hallazgos:
         return post_discord({
-            "content": f"📊 **REPORTE POKÉMON TCG |INGLÉS| - {hora_label} PET**",
+            "content": f"📊 **REPORTE POKÉMON TCG 30TH (INGLÉS) - {hora_label} PET**",
             "embeds": [{
-                "title": "Resumen de Tiendas",
+                "title": "Consolidado de Tiendas Rastreadas",
                 "description": "No se encontraron publicaciones activas coincidentes en inglés.",
                 "color": 3447003,
                 "footer": {"text": f"Generado el {datetime.now(TZ).strftime('%Y-%m-%d %H:%M:%S')} (hora Perú)"},
@@ -316,7 +368,7 @@ def enviar_reporte_programado(hora_label):
             },
         }
         payload = {
-            "content": f"📊 **REPORTE POKÉMON TCG |INGLÉS| - {hora_label} PET**" if idx == 0 else None,
+            "content": f"📊 **REPORTE POKÉMON TCG 30TH (INGLÉS) - {hora_label} PET**" if idx == 0 else None,
             "embeds": [embed],
         }
         if not post_discord(payload):
@@ -715,22 +767,52 @@ def ejecutar_ciclo(num_ciclo=1):
 
     state = load_state()
 
-    # 1) Alerta inmediata consolidada SOLO cuando hay productos nuevos en stock
+    # 1) Control inteligente de cambios de stock (sin repetir mientras la lista sea igual)
     if not es_reporte_forzado:
         nuevos_en_stock = []
+        recien_agotados = []
+        actuales_con_stock = [it for it in hallazgos if it["stock"]]
+        hallazgos_por_key = {it["url_key"]: it for it in hallazgos}
+
+        # Actualiza metadatos y detecta productos que pasaron de False -> True o True -> False
         for item in hallazgos:
             key = item["url_key"]
             antes = state["stock"].get(key, False)
+            state["items_meta"][key] = {
+                "tienda": item["tienda"],
+                "titulo": item["titulo"],
+                "url": item["url"],
+            }
             if item["stock"] and not antes:
                 print(f"[{item['tienda']}] | {recortar_texto(item['titulo'], max_len=52)}")
                 nuevos_en_stock.append(item)
-            elif not item["stock"]:
-                state["stock"][key] = False
+            elif not item["stock"] and antes:
+                recien_agotados.append(item)
 
-        if nuevos_en_stock:
-            if enviar_alerta_stock_consolidado(nuevos_en_stock):
-                for item in nuevos_en_stock:
-                    state["stock"][item["url_key"]] = True
+        # Solo en escaneo profundo: si un producto que tenía stock desapareció de la tienda, marcarlo agotado
+        if es_profundo:
+            for key, estaba_en_stock in list(state["stock"].items()):
+                if estaba_en_stock and key not in hallazgos_por_key:
+                    meta = state["items_meta"].get(key, {"tienda": "Tienda", "titulo": key, "url": key})
+                    recien_agotados.append(meta)
+
+        firma_actual = sorted(it["url_key"] for it in actuales_con_stock)
+        firma_anterior = sorted(state.get("last_stock_list", []))
+
+        # Solo envía si hubo entrada nueva o agotamiento Y la lista resultante cambió
+        if firma_actual != firma_anterior:
+            if nuevos_en_stock:
+                if enviar_alerta_stock_nuevo(actuales_con_stock):
+                    for it in actuales_con_stock:
+                        state["stock"][it["url_key"]] = True
+                    for it in recien_agotados:
+                        state["stock"][it["url_key"]] = False
+                    state["last_stock_list"] = firma_actual
+            elif recien_agotados:
+                if enviar_actualizacion_agotados(recien_agotados, actuales_con_stock):
+                    for it in recien_agotados:
+                        state["stock"][it["url_key"]] = False
+                    state["last_stock_list"] = firma_actual
 
     # 2) Reportes consolidados: únicamente 1 vez en cada hora de REPORT_HOURS (08, 12, 16, 20)
     if es_reporte_forzado:
