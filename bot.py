@@ -268,8 +268,8 @@ def enviar_reporte_programado(hora_label):
     ordenados = sorted(hallazgos, key=lambda x: (not x["stock"], x["tienda"], x["titulo"]))
     lineas = []
     for it in ordenados:
-        estado = "🟢 CON STOCK" if it["stock"] else "🔴 SIN STOCK"
-        cart = f" | [🛒 Carrito]({it['cart_url']})" if it["stock"] else ""
+        estado = "🟢" if it["stock"] else "🔴"
+        cart = f" | [🛒]({it['cart_url']})" if it["stock"] else ""
         nom = recortar_texto(it["titulo"], max_len=55)
         lineas.append(f"• **[{it['tienda']}]** [{nom}]({it['url']}) - **{estado}** ({it['precio']}){cart}\n")
 
@@ -286,7 +286,7 @@ def enviar_reporte_programado(hora_label):
             },
         }
         payload = {
-            "content": f"📊 **REPORTE POKÉMON TCG 30TH (INGLÉS) - {hora_label} PET**" if idx == 0 else None,
+            "content": f"📊**PRODUCTOS TCG 30TH POKEMON|INGLÉS| - {hora_label} PET**" if idx == 0 else None,
             "embeds": [embed],
         }
         if not post_discord(payload):
