@@ -2,7 +2,7 @@ name: Monitor Stock Pokemon TCG
 
 on:
   schedule:
-    # Ejecuta cada 5 minutos (el script envía el consolidado 4 veces al día en hora Perú)
+    # Corre 24/7 cada 5 min y hace pasadas internas cada 25 segundos
     - cron: '*/5 * * * *'
   workflow_dispatch:
     inputs:
@@ -26,7 +26,7 @@ permissions:
 jobs:
   check-stock:
     runs-on: ubuntu-latest
-    timeout-minutes: 4
+    timeout-minutes: 6
 
     steps:
       - name: Descargar código
@@ -55,6 +55,9 @@ jobs:
           PROXY_URL: ${{ secrets.PROXY_URL }}
           MODO_EJECUCION: ${{ github.event.inputs.modo || 'COMPLETO' }}
           REPORT_HOURS: "8,12,16,20"
+          LOOP_SECONDS: "25"
+          DEEP_SCAN_EVERY: "4"
+          MAX_RUNTIME_SECONDS: "260"
         run: python bot.py
 
       - name: Guardar estado
