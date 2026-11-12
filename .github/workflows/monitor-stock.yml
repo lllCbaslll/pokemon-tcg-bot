@@ -2,8 +2,19 @@ name: Monitor Stock Pokemon TCG
 
 on:
   schedule:
+    # Ejecuta cada 5 minutos (el script decide cuándo toca reporte en hora Perú)
     - cron: '*/5 * * * *'
   workflow_dispatch:
+    inputs:
+      modo:
+        description: 'Modo de ejecución manual'
+        required: true
+        default: 'FORZAR_REPORTE'
+        type: choice
+        options:
+          - COMPLETO
+          - FORZAR_REPORTE
+          - SOLO_ALERTAS
 
 concurrency:
   group: pokemon-monitor
@@ -18,34 +29,39 @@ jobs:
     timeout-minutes: 4
 
     steps:
-      - name: Descargar codigo
+      - name: Descargar código
         uses: actions/checkout@v4
 
-      - name: Configurar Python y Cache de PIP
+      - name: Configurar Python y caché de pip
         uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          python-version: '3.11'
           cache: 'pip'
 
-      - name: Instalar librerias
+      - name: Instalar librerías
         run: pip install -r requirements.txt
 
-      - name: Restaurar estado (evita alertas repetidas)
+      - name: Restaurar estado (anti-spam y control de reportes)
+        id: cache-state
         uses: actions/cache/restore@v4
         with:
           path: state.json
-          key: pokemon-state-${{ github.run_id }}
-          restore-keys: pokemon-state-
+          key: pokemon-state-${{ github.run_number }}-${{ github.run_attempt }}
+          restore-keys: |
+            pokemon-state-
 
       - name: Ejecutar Rastreador
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
-          MODO_EJECUCION: "SOLO_ALERTAS"
+          # En cron usa COMPLETO (alertas cada 5 min + 4 reportes diarios)
+          # En ejecución manual usa lo elegido en el botón (por defecto FORZAR_REPORTE)
+          MODO_EJECUCION: ${{ github.event.inputs.modo || 'COMPLETO' }}
+          REPORT_HOURS: "8,12,16,20"
         run: python bot.py
 
       - name: Guardar estado
-        if: always()
+        if: always() && hashFiles('state.json') != ''
         uses: actions/cache/save@v4
         with:
           path: state.json
-          key: pokemon-state-${{ github.run_id }}
+          key: pokemon-state-${{ github.run_number }}-${{ github.run_attempt }}
