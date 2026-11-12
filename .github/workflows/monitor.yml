@@ -2,14 +2,14 @@ name: Monitor Stock Pokemon TCG
 
 on:
   schedule:
-    # Corre 24/7 cada 5 min y hace pasadas internas cada 25 segundos
+    # Corre cada 5 min y hace pasadas internas cada 25 segundos
     - cron: '*/5 * * * *'
   workflow_dispatch:
     inputs:
       modo:
         description: 'Modo de ejecución manual'
         required: true
-        default: 'FORZAR_REPORTE'
+        default: 'COMPLETO'
         type: choice
         options:
           - COMPLETO
