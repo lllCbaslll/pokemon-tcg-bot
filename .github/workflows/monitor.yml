@@ -2,7 +2,7 @@ name: Monitor Stock Pokemon TCG
 
 on:
   schedule:
-    # Ejecuta cada 5 minutos (el script decide cuándo toca reporte en hora Perú)
+    # Ejecuta cada 5 minutos (el script envía el consolidado 4 veces al día en hora Perú)
     - cron: '*/5 * * * *'
   workflow_dispatch:
     inputs:
@@ -42,7 +42,6 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Restaurar estado (anti-spam y control de reportes)
-        id: cache-state
         uses: actions/cache/restore@v4
         with:
           path: state.json
@@ -53,8 +52,6 @@ jobs:
       - name: Ejecutar Rastreador
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
-          # En cron usa COMPLETO (alertas cada 5 min + 4 reportes diarios)
-          # En ejecución manual usa lo elegido en el botón (por defecto FORZAR_REPORTE)
           MODO_EJECUCION: ${{ github.event.inputs.modo || 'COMPLETO' }}
           REPORT_HOURS: "8,12,16,20"
         run: python bot.py
