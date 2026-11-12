@@ -35,8 +35,7 @@ REPORT_HOURS = tuple(
 # SOLO_ALERTAS | FORZAR_REPORTE | REPORTE | COMPLETO
 MODO = os.getenv("MODO_EJECUCION", "COMPLETO").strip().upper()
 
-# 0 = ejecución única (ideal para GitHub Actions / cron cada 5 min)
-# 300 = bucle infinito cada 5 minutos (ideal para VPS / Docker / PC local)
+# 0 = ejecución única (GitHub Actions / cron) | >0 = bucle continuo en segundos (VPS)
 LOOP_SECONDS = int(os.getenv("LOOP_SECONDS", "0"))
 
 HEADERS = {
@@ -178,7 +177,6 @@ def enviar_reporte_programado(hora_label):
             "footer": {"text": f"Generado el {datetime.now(TZ).strftime('%Y-%m-%d %H:%M:%S')} (hora Perú)"},
         }]
     else:
-        # Ordena primero los que tienen stock
         ordenados = sorted(hallazgos, key=lambda x: (not x["stock"], x["tienda"], x["titulo"]))
         bloques = []
         actual = ""
@@ -314,7 +312,7 @@ def buscar_phantom():
     except Exception as e:
         print(f"[Phantom] Error: {e}")
 
-# ---------- Ejecución de un ciclo ----------
+# ---------- Ejecución ----------
 def ejecutar_ciclo():
     hallazgos.clear()
     ahora = datetime.now(TZ)
@@ -336,7 +334,6 @@ def ejecutar_ciclo():
 
     es_reporte = MODO in ("FORZAR_REPORTE", "REPORTE")
 
-    # Alertas inmediatas (solo transición False -> True)
     if not es_reporte:
         for item in hallazgos:
             key = item["url_key"]
@@ -346,10 +343,8 @@ def ejecutar_ciclo():
                 if enviar_alerta_stock_inmediato(item):
                     state["stock"][key] = True
             elif not item["stock"]:
-                # Solo baja a False cuando confirmamos que la página cargó y dice sin stock
                 state["stock"][key] = False
 
-    # Reporte consolidado (4 veces al día: 08:00, 12:00, 16:00, 20:00 PET)
     if MODO == "FORZAR_REPORTE":
         enviar_reporte_programado(f"{ahora:%H:%M}")
     elif MODO != "SOLO_ALERTAS":
