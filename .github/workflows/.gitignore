@@ -1,5 +1,11 @@
-__pycache__/
-*.pyc
-state.json
+# Archivos sensibles y estado local
 .env
+.env.*
+state.json
+*.tmp
+
+# Entornos y caché de Python
+__pycache__/
+*.py[cod]
+venv/
 .venv/
