@@ -5,6 +5,7 @@ import re
 import sys
 import time
 import urllib.parse
+from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
@@ -48,8 +49,21 @@ MAX_RUNTIME_SECONDS = int(os.getenv("MAX_RUNTIME_SECONDS", "0"))
 
 # Tiendas especializadas TCG con dominios activos verificados
 TIENDAS_TCG = [
-    ("Koko Station", "https://kokostation.com"),
+    ("Koko", "https://kokostation.com"),
 ]
+
+# Mapeo de nombres cortos para Discord y logs
+TIENDA_CORTA = {
+    "Koko Station": "Koko",
+    "Saga Falabella": "Saga",
+    "Plaza Vea": "Vea",
+    "Ilahui": "Ilahui",
+    "Oechsle": "Oechsle",
+    "Tai Loy": "Tai Loy",
+    "Ripley": "Ripley",
+    "Phantom": "Phantom",
+    "Pharmax": "Pharmax",
+}
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
@@ -158,6 +172,9 @@ def recortar_texto(texto, max_len=50):
     texto = " ".join(texto.split())
     return (texto[: max_len - 1] + "…") if len(texto) > max_len else texto
 
+def nombre_tienda_corto(tienda):
+    return TIENDA_CORTA.get(tienda, tienda)
+
 hallazgos = []
 hallazgos_lock = Lock()
 
@@ -169,11 +186,12 @@ def registrar_producto(tienda, titulo, url, stock, precio="N/A", cart_url=None, 
     if not url:
         return
     url_limpia = url.split("?")[0].rstrip("/")
+    tienda_label = nombre_tienda_corto(tienda)
     with hallazgos_lock:
         if any(h["url_key"] == url_limpia for h in hallazgos):
             return
         hallazgos.append({
-            "tienda": tienda,
+            "tienda": tienda_label,
             "titulo": titulo.strip(),
             "url": url,
             "url_key": url_limpia,
@@ -220,15 +238,21 @@ def _dividir_en_bloques(lineas, max_chars=3800):
     return bloques
 
 def enviar_alerta_stock_consolidado(items):
-    """Envía los productos nuevos en stock en un solo cuadro compacto."""
+    """Envía los productos nuevos en stock agrupados por tienda en un cuadro compacto."""
     if not items:
         return False
 
-    ordenados = sorted(items, key=lambda x: (x["tienda"], x["titulo"]))
+    por_tienda = defaultdict(list)
+    for it in sorted(items, key=lambda x: (x["tienda"], x["titulo"])):
+        por_tienda[it["tienda"]].append(it)
+
     lineas = []
-    for it in ordenados:
-        nom = recortar_texto(it["titulo"], max_len=50)
-        lineas.append(f"[{it['tienda']}] | [{nom}]({it['url']}) | {it['precio']} | [🛒 Carrito]({it['cart_url']})\n")
+    for tienda, prods in por_tienda.items():
+        lineas.append(f"**[{tienda}]**\n")
+        for it in prods:
+            nom = recortar_texto(it["titulo"], max_len=50)
+            lineas.append(f"• [{nom}]({it['url']}) | {it['precio']} | [🛒]({it['cart_url']})\n")
+        lineas.append("\n")
 
     bloques = _dividir_en_bloques(lineas, max_chars=3800)
     exito = True
@@ -256,22 +280,28 @@ def enviar_alerta_stock_consolidado(items):
 def enviar_reporte_programado(hora_label):
     if not hallazgos:
         return post_discord({
-            "content": f"📊 **REPORTE POKÉMON TCG 30TH (INGLÉS) - {hora_label} PET**",
+            "content": f"📊 **REPORTE POKÉMON TCG |INGLÉS| - {hora_label} PET**",
             "embeds": [{
-                "title": "Consolidado de Tiendas Rastreadas",
+                "title": "Resumen de Tiendas",
                 "description": "No se encontraron publicaciones activas coincidentes en inglés.",
                 "color": 3447003,
                 "footer": {"text": f"Generado el {datetime.now(TZ).strftime('%Y-%m-%d %H:%M:%S')} (hora Perú)"},
             }],
         })
 
-    ordenados = sorted(hallazgos, key=lambda x: (not x["stock"], x["tienda"], x["titulo"]))
+    por_tienda = defaultdict(list)
+    for it in sorted(hallazgos, key=lambda x: (x["tienda"], not x["stock"], x["titulo"])):
+        por_tienda[it["tienda"]].append(it)
+
     lineas = []
-    for it in ordenados:
-        estado = "🟢" if it["stock"] else "🔴"
-        cart = f" | [🛒]({it['cart_url']})" if it["stock"] else ""
-        nom = recortar_texto(it["titulo"], max_len=55)
-        lineas.append(f"• **[{it['tienda']}]** [{nom}]({it['url']}) - **{estado}** ({it['precio']}){cart}\n")
+    for tienda, prods in por_tienda.items():
+        lineas.append(f"**[{tienda}]**\n")
+        for it in prods:
+            estado = "🟢" if it["stock"] else "🔴"
+            cart = f" | [🛒]({it['cart_url']})" if it["stock"] else ""
+            nom = recortar_texto(it["titulo"], max_len=52)
+            lineas.append(f"{estado} [{nom}]({it['url']}) | {it['precio']}{cart}\n")
+        lineas.append("\n")
 
     bloques = _dividir_en_bloques(lineas, max_chars=3800)
     exito = True
@@ -282,11 +312,11 @@ def enviar_reporte_programado(hora_label):
             "description": desc,
             "color": 3447003,
             "footer": {
-                "text": f"Total: {len(ordenados)} productos | {datetime.now(TZ).strftime('%Y-%m-%d %H:%M:%S')} PET"
+                "text": f"Total: {len(hallazgos)} productos | {datetime.now(TZ).strftime('%Y-%m-%d %H:%M:%S')} PET"
             },
         }
         payload = {
-            "content": f"📊**PRODUCTOS TCG 30TH POKEMON|INGLÉS| - {hora_label} PET**" if idx == 0 else None,
+            "content": f"📊 **REPORTE POKÉMON TCG |INGLÉS| - {hora_label} PET**" if idx == 0 else None,
             "embeds": [embed],
         }
         if not post_discord(payload):
@@ -329,7 +359,7 @@ def buscar_vtex(nombre, domain):
                 cart = f"{domain}/checkout/cart/add?sku={sku_id}&qty=1&seller=1" if sku_id else link
                 registrar_producto(nombre, nom, link, stock, precio, cart, sku=sku_id)
         except Exception as e:
-            print(f"[{nombre}] Error '{term}': {e}")
+            print(f"[{nombre_tienda_corto(nombre)}] Error '{term}': {e}")
 
 
 def buscar_shopify_rapido(nombre, domain, urls_fijas=None, forzar_descubrimiento=False):
@@ -397,7 +427,7 @@ def buscar_shopify_rapido(nombre, domain, urls_fijas=None, forzar_descubrimiento
             cart = f"{domain}/cart/add?id={vid}&quantity=1" if (stock and vid) else prod_url
             registrar_producto(nombre, titulo, prod_url, stock, precio, cart, sku=vid)
         except Exception as e:
-            print(f"[{nombre}] Error detalle {handle}: {e}")
+            print(f"[{nombre_tienda_corto(nombre)}] Error detalle {handle}: {e}")
 
     return True
 
@@ -539,10 +569,10 @@ def buscar_saga():
                         p_val = prices[0].get("price")
                         precio = f"S/ {p_val[0]}" if isinstance(p_val, list) and p_val else (f"S/ {p_val}" if p_val else "N/A")
                     stock = not bool(prod.get("isOutOfStock", False))
-                    encontrados.append(("Saga Falabella", titulo, link, stock, precio, link, sku))
+                    encontrados.append(("Saga", titulo, link, stock, precio, link, sku))
         except Exception:
             pass
-    DEEP_RESULTS_CACHE["Saga Falabella"] = encontrados
+    DEEP_RESULTS_CACHE["Saga"] = encontrados
     for item in encontrados:
         registrar_producto(*item)
 
@@ -648,7 +678,7 @@ def ejecutar_ciclo(num_ciclo=1):
             forzar_descubrimiento=es_profundo,
         ),
         lambda: buscar_vtex("Oechsle", "https://www.oechsle.pe"),
-        lambda: buscar_vtex("Plaza Vea", "https://www.plazavea.com.pe"),
+        lambda: buscar_vtex("Vea", "https://www.plazavea.com.pe"),
     ]
 
     tcg_no_shopify = []
