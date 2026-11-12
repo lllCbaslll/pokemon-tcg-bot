@@ -75,7 +75,7 @@ TARGET_KEYWORDS = [
 ]
 
 EXCLUDE_RE = re.compile(
-    r"espa[ñn]ol|\bspa\b|spanish|peluche|\bron\b|sorpresa|brillante|pok[eé]\s*ball",
+    r"espa[ñn]ol|\bspa\b|spanish|japon[eé]s|japanese|peluche|\bron\b|sorpresa|brillante|pok[eé]\s*ball|figura|takara|vaso|funda|protector|sleeve",
     re.I,
 )
 THIRTY_RE = re.compile(r"(?<!\d)30(?!\d)")
@@ -154,6 +154,10 @@ def es_producto_valido(texto, url=""):
         return True
     return any(all(_kw_match(k, t) for k in conj) for conj in TARGET_KEYWORDS)
 
+def recortar_texto(texto, max_len=50):
+    texto = " ".join(texto.split())
+    return (texto[: max_len - 1] + "…") if len(texto) > max_len else texto
+
 hallazgos = []
 hallazgos_lock = Lock()
 
@@ -191,91 +195,106 @@ def post_discord(payload):
             time.sleep(min(retry_after, 5))
             res = SESSION.post(WEBHOOK_URL, json=payload, timeout=10)
 
+        if res.status_code >= 300:
+            print(f"Discord -> HTTP {res.status_code} | Detalle: {res.text[:250]}")
+            return False
+
         print(f"Discord -> HTTP {res.status_code}")
-        return res.status_code < 300
+        return True
     except Exception as e:
         print(f"Error enviando a Discord: {e}")
         return False
 
+def _dividir_en_bloques(lineas, max_chars=3800):
+    bloques = []
+    actual = ""
+    for linea in lineas:
+        if len(actual) + len(linea) > max_chars:
+            if actual.strip():
+                bloques.append(actual.strip())
+            actual = linea
+        else:
+            actual += linea
+    if actual.strip():
+        bloques.append(actual.strip())
+    return bloques
+
 def enviar_alerta_stock_consolidado(items):
-    """Envía un único embed con todos los productos que acaban de entrar en stock."""
+    """Envía los productos nuevos en stock en un solo cuadro compacto."""
     if not items:
         return False
 
     ordenados = sorted(items, key=lambda x: (x["tienda"], x["titulo"]))
-    bloques = []
-    actual = ""
-
+    lineas = []
     for it in ordenados:
-        fila = f"[{it['tienda']}] | [{it['titulo']}]({it['url']}) | {it['precio']} | [🛒 Añadir al carrito]({it['cart_url']})\n"
-        if len(actual) + len(fila) > 3800:
-            bloques.append(actual.strip())
-            actual = fila
-        else:
-            actual += fila
+        nom = recortar_texto(it["titulo"], max_len=50)
+        lineas.append(f"[{it['tienda']}] | [{nom}]({it['url']}) | {it['precio']} | [🛒 Carrito]({it['cart_url']})\n")
 
-    if actual.strip():
-        bloques.append(actual.strip())
+    bloques = _dividir_en_bloques(lineas, max_chars=3800)
+    exito = True
 
-    embeds = []
-    for idx, desc in enumerate(bloques[:10]):
+    for idx, desc in enumerate(bloques):
         embed = {
             "description": desc,
             "color": 3066993,
-        }
-        if idx == len(bloques[:10]) - 1:
-            embed["footer"] = {
+            "footer": {
                 "text": f"Detectado: {datetime.now(TZ).strftime('%d/%m/%Y %H:%M:%S')} PET"
-            }
-        embeds.append(embed)
+            },
+        }
+        payload = {
+            "content": "🚨¡STOCK EN INGLÉS DETECTADO!🟢@everyone" if idx == 0 else None,
+            "allowed_mentions": {"parse": ["everyone"]} if idx == 0 else {"parse": []},
+            "embeds": [embed],
+        }
+        if not post_discord(payload):
+            exito = False
+        if len(bloques) > 1:
+            time.sleep(0.8)
 
-    return post_discord({
-        "content": "🚨¡STOCK EN INGLÉS DETECTADO!🟢@everyone",
-        "allowed_mentions": {"parse": ["everyone"]},
-        "embeds": embeds,
-    })
+    return exito
 
 def enviar_reporte_programado(hora_label):
     if not hallazgos:
-        embeds = [{
-            "title": "Consolidado de Tiendas Rastreadas",
-            "description": "No se encontraron publicaciones activas coincidentes en inglés.",
-            "color": 3447003,
-            "footer": {"text": f"Generado el {datetime.now(TZ).strftime('%Y-%m-%d %H:%M:%S')} (hora Perú)"},
-        }]
-    else:
-        ordenados = sorted(hallazgos, key=lambda x: (not x["stock"], x["tienda"], x["titulo"]))
-        bloques = []
-        actual = ""
-        for it in ordenados:
-            estado = "🟢 CON STOCK" if it["stock"] else "🔴 SIN STOCK"
-            cart = f" | [🛒 Carrito]({it['cart_url']})" if it["stock"] else ""
-            linea = f"• **[{it['tienda']}]** [{it['titulo']}]({it['url']}) - **{estado}** ({it['precio']}){cart}\n"
-            if len(actual) + len(linea) > 3800:
-                bloques.append(actual.strip())
-                actual = linea
-            else:
-                actual += linea
-        if actual.strip():
-            bloques.append(actual.strip())
-
-        embeds = []
-        for idx, desc in enumerate(bloques[:10]):
-            embed = {
-                "title": "Consolidado de Tiendas Rastreadas" if idx == 0 else f"Consolidado (Parte {idx + 1})",
-                "description": desc,
+        return post_discord({
+            "content": f"📊 **REPORTE POKÉMON TCG 30TH (INGLÉS) - {hora_label} PET**",
+            "embeds": [{
+                "title": "Consolidado de Tiendas Rastreadas",
+                "description": "No se encontraron publicaciones activas coincidentes en inglés.",
                 "color": 3447003,
-            }
-            if idx == len(bloques[:10]) - 1:
-                embed["footer"] = {
-                    "text": f"Total: {len(ordenados)} productos | {datetime.now(TZ).strftime('%Y-%m-%d %H:%M:%S')} PET"
-                }
-            embeds.append(embed)
+                "footer": {"text": f"Generado el {datetime.now(TZ).strftime('%Y-%m-%d %H:%M:%S')} (hora Perú)"},
+            }],
+        })
 
-    return post_discord({
-        "content": f"📊 **REPORTE POKÉMON TCG 30TH (INGLÉS) - {hora_label} PET**",
-        "embeds": embeds,
-    })
+    ordenados = sorted(hallazgos, key=lambda x: (not x["stock"], x["tienda"], x["titulo"]))
+    lineas = []
+    for it in ordenados:
+        estado = "🟢 CON STOCK" if it["stock"] else "🔴 SIN STOCK"
+        cart = f" | [🛒 Carrito]({it['cart_url']})" if it["stock"] else ""
+        nom = recortar_texto(it["titulo"], max_len=55)
+        lineas.append(f"• **[{it['tienda']}]** [{nom}]({it['url']}) - **{estado}** ({it['precio']}){cart}\n")
+
+    bloques = _dividir_en_bloques(lineas, max_chars=3800)
+    exito = True
+
+    for idx, desc in enumerate(bloques):
+        embed = {
+            "title": "Consolidado de Tiendas Rastreadas" if idx == 0 else f"Consolidado (Parte {idx + 1})",
+            "description": desc,
+            "color": 3447003,
+            "footer": {
+                "text": f"Total: {len(ordenados)} productos | {datetime.now(TZ).strftime('%Y-%m-%d %H:%M:%S')} PET"
+            },
+        }
+        payload = {
+            "content": f"📊 **REPORTE POKÉMON TCG 30TH (INGLÉS) - {hora_label} PET**" if idx == 0 else None,
+            "embeds": [embed],
+        }
+        if not post_discord(payload):
+            exito = False
+        if len(bloques) > 1:
+            time.sleep(0.8)
+
+    return exito
 
 # ---------- Carril Rápido (APIs ligeras cada 25s) ----------
 
@@ -673,7 +692,7 @@ def ejecutar_ciclo(num_ciclo=1):
             key = item["url_key"]
             antes = state["stock"].get(key, False)
             if item["stock"] and not antes:
-                print(f"STOCK {item['tienda']}: {item['titulo']}")
+                print(f"[{item['tienda']}] | {recortar_texto(item['titulo'], max_len=52)}")
                 nuevos_en_stock.append(item)
             elif not item["stock"]:
                 state["stock"][key] = False
