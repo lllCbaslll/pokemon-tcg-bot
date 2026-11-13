@@ -61,7 +61,7 @@ jobs:
           LOOP_SECONDS: "25"
           DEEP_SCAN_EVERY: "4"
           MAX_RUNTIME_SECONDS: "260"
-        run: python bot.py
+        run: xvfb-run -a --server-args="-screen 0 1366x768x24" python bot.py
 
       - name: Guardar estado
         if: always() && hashFiles('state.json') != ''
