@@ -65,6 +65,7 @@ PHANTOM_URLS_FIJAS = [
 # URLs directas de respaldo en Ripley
 RIPLEY_URLS_FIJAS = [
     "https://simple.ripley.com.pe/cartas-pokemon-tcg-30-aniversario-ingles-battle-deck-espeon-cards-set-pmp20001869496",
+    "https://simple.ripley.com.pe/pokemon-tcg-30-aniversario-poster-coleccionable-en-ingles-pmp20001714451",
 ]
 
 # Mapeo de nombres cortos para Discord y logs
@@ -691,6 +692,50 @@ def buscar_saga():
         registrar_producto(*item)
 
 
+def _extraer_productos_json_ripley(data, out_list, urls_vistas):
+    """Recorre respuestas JSON interceptadas en Ripley buscando objetos de producto."""
+    if isinstance(data, dict):
+        nombre = data.get("name") or data.get("title")
+        link = data.get("url") or data.get("link")
+        part = data.get("partNumber") or data.get("sku")
+        if nombre and (link or part) and isinstance(nombre, str):
+            if not link and part:
+                slug = re.sub(r"[^a-z0-9]+", "-", nombre.lower()).strip("-")
+                link = f"https://simple.ripley.com.pe/{slug}-{str(part).lower()}"
+            elif link.startswith("/"):
+                link = f"https://simple.ripley.com.pe{link}"
+            link_clean = link.split("?")[0]
+            if (
+                "simple.ripley.com.pe" in link_clean
+                and es_producto_valido(nombre, link_clean)
+                and link_clean not in urls_vistas
+            ):
+                prices = data.get("prices") or {}
+                p_num = (
+                    prices.get("offerPrice")
+                    or prices.get("cardPrice")
+                    or prices.get("listPrice")
+                    or data.get("offerPrice")
+                    or data.get("price")
+                )
+                precio = f"S/ {p_num}" if p_num else "N/A"
+                stock = not bool(data.get("isOutOfStock", False)) and not bool(data.get("isUnavailable", False))
+                urls_vistas.add(link_clean)
+                out_list.append(("Ripley", nombre.strip(), link_clean, stock, precio, link_clean, str(part or "N/A")))
+
+        for v in data.values():
+            _extraer_productos_json_ripley(v, out_list, urls_vistas)
+    elif isinstance(data, list):
+        for item in data:
+            _extraer_productos_json_ripley(item, out_list, urls_vistas)
+
+
+def _titulo_desde_slug_ripley(url_clean):
+    slug = url_clean.rstrip("/").rsplit("/", 1)[-1]
+    slug = re.sub(r"-(?:pmp\d+|\d{7,})$", "", slug, flags=re.I)
+    return slug.replace("-", " ").title()
+
+
 def buscar_ripley():
     encontrados = []
     urls_vistas = set()
@@ -713,43 +758,74 @@ def buscar_ripley():
             )
             page = context.new_page()
 
-            for term in ["pokemon 30", "tcg 30"]:
+            def on_response(response):
+                try:
+                    if "ripley.com.pe" in response.url and response.status == 200:
+                        ct = response.headers.get("content-type", "")
+                        if "application/json" in ct:
+                            _extraer_productos_json_ripley(response.json(), encontrados, urls_vistas)
+                except Exception:
+                    pass
+
+            page.on("response", on_response)
+
+            for term in ["POKEMON TCG 30", "pokemon 30 aniversario"]:
                 q = urllib.parse.quote(term)
                 search_url = f"https://simple.ripley.com.pe/search/{q}?s=mdco"
                 try:
                     page.goto(search_url, wait_until="domcontentloaded", timeout=25000)
-                    page.wait_for_selector("a.catalog-product-item, .catalog-product-item", timeout=10000)
+                    page.wait_for_timeout(3500)
+                    page.evaluate("window.scrollTo(0, document.body.scrollHeight / 2)")
+                    page.wait_for_timeout(1500)
                 except Exception:
                     pass
 
-                html = page.content()
-                soup = BeautifulSoup(html, "html.parser")
+                soup = BeautifulSoup(page.content(), "html.parser")
 
-                for card in soup.select("a.catalog-product-item, .catalog-product-item"):
-                    a_tag = card if card.name == "a" else card.select_one("a[href]")
-                    if not a_tag:
-                        continue
+                # Extracción universal por enlaces de producto (-pmpXXXX o -2000XXXX)
+                for a_tag in soup.select("a[href]"):
                     href = a_tag.get("href", "")
                     if not href:
                         continue
                     link = f"https://simple.ripley.com.pe{href}" if href.startswith("/") else href
                     link_clean = link.split("?")[0]
-
-                    name_el = card.select_one(".catalog-product-details__name, .product-name")
-                    titulo = name_el.get_text(strip=True) if name_el else a_tag.get_text(" ", strip=True)
-                    if not titulo or not es_producto_valido(titulo, link_clean) or link_clean in urls_vistas:
+                    if "simple.ripley.com.pe/" not in link_clean:
+                        continue
+                    if not re.search(r"-(?:pmp\d+|\d{7,})$", link_clean, re.I):
+                        continue
+                    if link_clean in urls_vistas:
                         continue
 
-                    pr_el = card.select_one(
-                        ".catalog-prices__offer-price, .catalog-prices__card-price, .catalog-prices__list-price"
-                    )
-                    precio = pr_el.get_text(strip=True) if pr_el else "N/A"
-                    txt = card.get_text(" ", strip=True).lower()
-                    stock = ("agotado" not in txt) and ("sin stock" not in txt) and ("no disponible" not in txt)
+                    card = a_tag
+                    for _ in range(4):
+                        if card.parent and card.parent.name in ("div", "article", "li"):
+                            txt_parent = card.parent.get_text(" ", strip=True)
+                            if "S/" in txt_parent and len(txt_parent) < 600:
+                                card = card.parent
+                                break
+                            card = card.parent
+
+                    img = card.select_one("img[alt]")
+                    alt_txt = img.get("alt", "").strip() if img else ""
+                    a_txt = a_tag.get_text(" ", strip=True)
+                    titulo = max([alt_txt, a_txt], key=len)
+                    titulo = re.split(r"\bS/\s*\d", titulo)[0].strip()
+                    if len(titulo) < 8:
+                        titulo = _titulo_desde_slug_ripley(link_clean)
+
+                    if not es_producto_valido(titulo, link_clean):
+                        continue
+
+                    card_txt = card.get_text(" ", strip=True)
+                    precios_encontrados = re.findall(r"S/\s*[\d,]+(?:\.\d{2})?", card_txt)
+                    precio = precios_encontrados[-1] if precios_encontrados else "N/A"
+                    low_txt = card_txt.lower()
+                    stock = ("agotado" not in low_txt) and ("sin stock" not in low_txt) and ("no disponible" not in low_txt)
 
                     urls_vistas.add(link_clean)
                     encontrados.append(("Ripley", titulo, link_clean, stock, precio, link_clean, "N/A"))
 
+            # Verifica URLs fijas de Ripley si no salieron en el buscador
             for fixed_url in RIPLEY_URLS_FIJAS:
                 clean_fixed = fixed_url.split("?")[0]
                 if clean_fixed in urls_vistas:
@@ -762,13 +838,16 @@ def buscar_ripley():
                     titulo = h1.get_text(strip=True) if h1 else ""
                     if not titulo or not es_producto_valido(titulo, clean_fixed):
                         continue
-                    pr = soup.select_one(
-                        ".product-internet-price-not-best .product-price, .product-internet-price .product-price, .product-price"
+                    main_txt = (soup.select_one("main") or soup).get_text(" ", strip=True)
+                    precios = re.findall(r"S/\s*[\d,]+(?:\.\d{2})?", main_txt)
+                    precio = precios[1] if len(precios) >= 2 else (precios[0] if precios else "N/A")
+                    low_txt = main_txt.lower()
+                    has_btn = (
+                        "agregar al carro" in low_txt
+                        or "comprar ahora" in low_txt
+                        or soup.select_one("#buy-button, button.add-to-cart") is not None
                     )
-                    precio = pr.get_text(strip=True) if pr else "N/A"
-                    txt = soup.get_text(" ", strip=True).lower()
-                    has_btn = soup.select_one("#buy-button, button.add-to-cart, [data-testid='add-to-cart']") is not None
-                    stock = has_btn and ("agotado" not in txt) and ("sin stock" not in txt)
+                    stock = has_btn and ("agotado" not in low_txt) and ("sin stock" not in low_txt)
                     urls_vistas.add(clean_fixed)
                     encontrados.append(("Ripley", titulo, clean_fixed, stock, precio, clean_fixed, "N/A"))
                 except Exception:
