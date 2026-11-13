@@ -27,6 +27,11 @@ try:
 except ImportError:
     curl_requests = None
 
+try:
+    from playwright.sync_api import sync_playwright
+except ImportError:
+    sync_playwright = None
+
 # ---------- Configuración ----------
 WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK", "").strip()
 PROXY_URL = os.getenv("PROXY_URL", "").strip() or None
@@ -686,155 +691,94 @@ def buscar_saga():
         registrar_producto(*item)
 
 
-def _parsear_producto_ripley_json(prod):
-    titulo = prod.get("name") or prod.get("title") or ""
-    link = prod.get("url") or prod.get("link") or ""
-    if link.startswith("/"):
-        link = f"https://simple.ripley.com.pe{link}"
-    if not titulo or not link or not es_producto_valido(titulo, link):
-        return None
-
-    sku = str(prod.get("partNumber") or prod.get("sku") or "N/A")
-    prices = prod.get("prices") or {}
-    p_num = (
-        prices.get("offerPrice")
-        or prices.get("cardPrice")
-        or prices.get("listPrice")
-        or prod.get("price")
-    )
-    precio = f"S/ {p_num}" if p_num else "N/A"
-    stock = not bool(prod.get("isOutOfStock", False)) and not bool(prod.get("isUnavailable", False))
-    return ("Ripley", titulo, link.split("?")[0], stock, precio, link.split("?")[0], sku)
-
-
-def _parsear_detalle_ripley(url):
-    url_limpia = url.split("?")[0]
-    try:
-        r = browser_get(
-            url_limpia,
-            headers={
-                **BROWSER_HEADERS,
-                "Referer": "https://simple.ripley.com.pe/",
-                "Sec-Fetch-Dest": "document",
-                "Sec-Fetch-Mode": "navigate",
-            },
-            use_proxy=True,
-            timeout=14,
-        )
-        if r.status_code != 200:
-            return None
-        soup = BeautifulSoup(r.text, "html.parser")
-
-        next_script = soup.find("script", id="__NEXT_DATA__")
-        if next_script and next_script.string:
-            nd = json.loads(next_script.string)
-            props = nd.get("props", {}).get("pageProps", {})
-            prod = props.get("product") or props.get("initialState", {}).get("product", {}).get("product")
-            if isinstance(prod, dict):
-                res = _parsear_producto_ripley_json({**prod, "url": url_limpia})
-                if res:
-                    return res
-
-        h1 = soup.select_one("h1")
-        titulo = h1.get_text(strip=True) if h1 else ""
-        if not titulo or not es_producto_valido(titulo, url_limpia):
-            return None
-
-        pr = soup.select_one(".product-internet-price-not-best .product-price, .product-internet-price .product-price, .product-price")
-        precio = pr.get_text(strip=True) if pr else "N/A"
-        txt = soup.get_text(" ", strip=True).lower()
-        has_btn = soup.select_one("#buy-button, button.add-to-cart, [data-testid='add-to-cart']") is not None
-        stock = has_btn and ("agotado" not in txt) and ("sin stock" not in txt)
-        return ("Ripley", titulo, url_limpia, stock, precio, url_limpia, "N/A")
-    except Exception:
-        return None
-
-
 def buscar_ripley():
     encontrados = []
     urls_vistas = set()
 
-    for term in ["pokemon 30", "tcg 30"]:
-        q = urllib.parse.quote(term)
-        api_headers = {
-            **BROWSER_HEADERS,
-            "Accept": "application/json, text/plain, */*",
-            "Referer": f"https://simple.ripley.com.pe/search/{q}",
-        }
+    if sync_playwright is None:
+        print("[Ripley] Playwright no está instalado; omitiendo.")
+        return
 
-        for api_url in (
-            f"https://simple.ripley.com.pe/api/v2/products/by-search?term={q}&page=1&pageSize=36",
-            f"https://simple.ripley.com.pe/api/v1/products/by-search?term={q}&page=1&pageSize=36",
-        ):
-            try:
-                r_api = browser_get(api_url, headers=api_headers, use_proxy=True, timeout=13)
-                if r_api.status_code == 200 and "application/json" in r_api.headers.get("Content-Type", ""):
-                    data = r_api.json()
-                    productos = data.get("products") or data.get("items") or []
-                    for prod in productos:
-                        parsed = _parsear_producto_ripley_json(prod)
-                        if parsed and parsed[2] not in urls_vistas:
-                            urls_vistas.add(parsed[2])
-                            encontrados.append(parsed)
-                    if productos:
-                        break
-            except Exception:
-                pass
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(
+                headless=True,
+                args=["--disable-blink-features=AutomationControlled", "--no-sandbox"],
+            )
+            context = browser.new_context(
+                user_agent=HEADERS["User-Agent"],
+                locale="es-PE",
+                timezone_id="America/Lima",
+                viewport={"width": 1366, "height": 768},
+            )
+            page = context.new_page()
 
-        if not encontrados:
-            url = f"https://simple.ripley.com.pe/search/{q}"
-            ripley_headers = {
-                **BROWSER_HEADERS,
-                "Referer": "https://simple.ripley.com.pe/",
-                "Sec-Fetch-Dest": "document",
-                "Sec-Fetch-Mode": "navigate",
-            }
-            try:
-                r = browser_get(url, headers=ripley_headers, use_proxy=True, timeout=14)
-                if r.status_code != 200:
-                    continue
-                soup = BeautifulSoup(r.text, "html.parser")
-                next_script = soup.find("script", id="__NEXT_DATA__")
-                if next_script and next_script.string:
-                    nd = json.loads(next_script.string)
-                    props = nd.get("props", {}).get("pageProps", {})
-                    productos = (
-                        props.get("products")
-                        or props.get("searchData", {}).get("products")
-                        or props.get("initialState", {}).get("search", {}).get("products")
-                        or []
-                    )
-                    for prod in productos:
-                        parsed = _parsear_producto_ripley_json(prod)
-                        if parsed and parsed[2] not in urls_vistas:
-                            urls_vistas.add(parsed[2])
-                            encontrados.append(parsed)
+            for term in ["pokemon 30", "tcg 30"]:
+                q = urllib.parse.quote(term)
+                search_url = f"https://simple.ripley.com.pe/search/{q}?s=mdco"
+                try:
+                    page.goto(search_url, wait_until="domcontentloaded", timeout=25000)
+                    page.wait_for_selector("a.catalog-product-item, .catalog-product-item", timeout=10000)
+                except Exception:
+                    pass
 
-                for card in soup.select("a.catalog-product-item, .catalog-product-item a[href]"):
-                    href = card.get("href", "")
+                html = page.content()
+                soup = BeautifulSoup(html, "html.parser")
+
+                for card in soup.select("a.catalog-product-item, .catalog-product-item"):
+                    a_tag = card if card.name == "a" else card.select_one("a[href]")
+                    if not a_tag:
+                        continue
+                    href = a_tag.get("href", "")
                     if not href:
                         continue
                     link = f"https://simple.ripley.com.pe{href}" if href.startswith("/") else href
                     link_clean = link.split("?")[0]
+
                     name_el = card.select_one(".catalog-product-details__name, .product-name")
-                    titulo = name_el.get_text(strip=True) if name_el else card.get_text(" ", strip=True)
-                    if not es_producto_valido(titulo, link_clean) or link_clean in urls_vistas:
+                    titulo = name_el.get_text(strip=True) if name_el else a_tag.get_text(" ", strip=True)
+                    if not titulo or not es_producto_valido(titulo, link_clean) or link_clean in urls_vistas:
                         continue
-                    pr_el = card.select_one(".catalog-prices__offer-price, .catalog-prices__list-price")
+
+                    pr_el = card.select_one(
+                        ".catalog-prices__offer-price, .catalog-prices__card-price, .catalog-prices__list-price"
+                    )
                     precio = pr_el.get_text(strip=True) if pr_el else "N/A"
                     txt = card.get_text(" ", strip=True).lower()
-                    stock = ("agotado" not in txt) and ("sin stock" not in txt)
+                    stock = ("agotado" not in txt) and ("sin stock" not in txt) and ("no disponible" not in txt)
+
                     urls_vistas.add(link_clean)
                     encontrados.append(("Ripley", titulo, link_clean, stock, precio, link_clean, "N/A"))
-            except Exception:
-                pass
 
-    for fixed_url in RIPLEY_URLS_FIJAS:
-        if fixed_url.split("?")[0] not in urls_vistas:
-            detalle = _parsear_detalle_ripley(fixed_url)
-            if detalle:
-                encontrados.append(detalle)
+            for fixed_url in RIPLEY_URLS_FIJAS:
+                clean_fixed = fixed_url.split("?")[0]
+                if clean_fixed in urls_vistas:
+                    continue
+                try:
+                    page.goto(clean_fixed, wait_until="domcontentloaded", timeout=20000)
+                    page.wait_for_selector("h1", timeout=8000)
+                    soup = BeautifulSoup(page.content(), "html.parser")
+                    h1 = soup.select_one("h1")
+                    titulo = h1.get_text(strip=True) if h1 else ""
+                    if not titulo or not es_producto_valido(titulo, clean_fixed):
+                        continue
+                    pr = soup.select_one(
+                        ".product-internet-price-not-best .product-price, .product-internet-price .product-price, .product-price"
+                    )
+                    precio = pr.get_text(strip=True) if pr else "N/A"
+                    txt = soup.get_text(" ", strip=True).lower()
+                    has_btn = soup.select_one("#buy-button, button.add-to-cart, [data-testid='add-to-cart']") is not None
+                    stock = has_btn and ("agotado" not in txt) and ("sin stock" not in txt)
+                    urls_vistas.add(clean_fixed)
+                    encontrados.append(("Ripley", titulo, clean_fixed, stock, precio, clean_fixed, "N/A"))
+                except Exception:
+                    pass
 
+            browser.close()
+    except Exception as e:
+        print(f"[Ripley] Error Playwright: {e}")
+
+    print(f"[Ripley] Capturados {len(encontrados)} productos válidos.")
     DEEP_RESULTS_CACHE["Ripley"] = encontrados
     for item in encontrados:
         registrar_producto(*item)
