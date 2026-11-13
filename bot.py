@@ -108,6 +108,10 @@ EXCLUDE_RE = re.compile(
     r"espa[ñn]ol|\bspa\b|spanish|japon[eé]s|japanese|peluche|\bron\b|sorpresa|brillante|pok[eé]\s*ball|figura|takara|vaso|funda|protector|sleeve|perfect\s*order|pitch\s*black|ascended\s*heroes",
     re.I,
 )
+WAF_TITLES_RE = re.compile(
+    r"ripley\.com\.pe|just a moment|un momento|access denied|attention required|cloudflare|checking your browser|enable javascript",
+    re.I,
+)
 THIRTY_RE = re.compile(r"(?<!\d)30(?:th|vo|º|°)?(?!\d)", re.I)
 ENGLISH_RE = re.compile(r"ingl[eé]s|english", re.I)
 POKEMON_RE = re.compile(r"pok[eé]mon|\btcg\b", re.I)
@@ -150,6 +154,19 @@ def browser_get(url, headers=None, use_proxy=False, timeout=12):
         timeout=timeout,
     )
 
+def _playwright_proxy_config():
+    if not PROXY_URL:
+        return None
+    parsed = urllib.parse.urlparse(PROXY_URL)
+    if not parsed.hostname or not parsed.port:
+        return None
+    cfg = {"server": f"{parsed.scheme or 'http'}://{parsed.hostname}:{parsed.port}"}
+    if parsed.username:
+        cfg["username"] = urllib.parse.unquote(parsed.username)
+    if parsed.password:
+        cfg["password"] = urllib.parse.unquote(parsed.password)
+    return cfg
+
 # ---------- Estado persistente ----------
 def load_state():
     try:
@@ -180,7 +197,9 @@ def _kw_match(kw, texto):
     return re.search(pat, texto) is not None
 
 def es_producto_valido(texto, url=""):
-    if not texto:
+    if not texto or len(texto.strip()) < 6:
+        return False
+    if WAF_TITLES_RE.search(texto):
         return False
     t = f"{texto} {url}".lower().replace("-", " ").replace("/", " ").replace("_", " ")
     if EXCLUDE_RE.search(t):
@@ -206,7 +225,7 @@ DISCOVERY_TTL = 600
 DEEP_RESULTS_CACHE = {}
 
 def registrar_producto(tienda, titulo, url, stock, precio="N/A", cart_url=None, sku="N/A"):
-    if not url:
+    if not url or not titulo or WAF_TITLES_RE.search(titulo):
         return
     url_limpia = url.split("?")[0].rstrip("/")
     tienda_label = nombre_tienda_corto(tienda)
@@ -736,6 +755,24 @@ def _titulo_desde_slug_ripley(url_clean):
     return slug.replace("-", " ").title()
 
 
+def _esperar_carga_ripley(page, timeout_ms=9000):
+    """Espera a que pase la pantalla de verificación de Cloudflare/Akamai si aparece."""
+    try:
+        page.wait_for_function(
+            """() => {
+                const h1 = document.querySelector('h1');
+                const txt = (h1 ? h1.innerText : document.title || '').toLowerCase();
+                return txt.length > 3
+                    && !txt.includes('ripley.com.pe')
+                    && !txt.includes('moment')
+                    && !txt.includes('denied');
+            }""",
+            timeout=timeout_ms,
+        )
+    except Exception:
+        pass
+
+
 def buscar_ripley():
     encontrados = []
     urls_vistas = set()
@@ -746,15 +783,27 @@ def buscar_ripley():
 
     try:
         with sync_playwright() as p:
-            browser = p.chromium.launch(
-                headless=True,
-                args=["--disable-blink-features=AutomationControlled", "--no-sandbox"],
-            )
+            launch_kwargs = {
+                "headless": True,
+                "args": [
+                    "--disable-blink-features=AutomationControlled",
+                    "--no-sandbox",
+                    "--disable-dev-shm-usage",
+                ],
+            }
+            proxy_cfg = _playwright_proxy_config()
+            if proxy_cfg:
+                launch_kwargs["proxy"] = proxy_cfg
+
+            browser = p.chromium.launch(**launch_kwargs)
             context = browser.new_context(
                 user_agent=HEADERS["User-Agent"],
                 locale="es-PE",
                 timezone_id="America/Lima",
                 viewport={"width": 1366, "height": 768},
+            )
+            context.add_init_script(
+                "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
             )
             page = context.new_page()
 
@@ -774,7 +823,8 @@ def buscar_ripley():
                 search_url = f"https://simple.ripley.com.pe/search/{q}?s=mdco"
                 try:
                     page.goto(search_url, wait_until="domcontentloaded", timeout=25000)
-                    page.wait_for_timeout(3500)
+                    _esperar_carga_ripley(page, timeout_ms=9000)
+                    page.wait_for_timeout(3000)
                     page.evaluate("window.scrollTo(0, document.body.scrollHeight / 2)")
                     page.wait_for_timeout(1500)
                 except Exception:
@@ -782,7 +832,6 @@ def buscar_ripley():
 
                 soup = BeautifulSoup(page.content(), "html.parser")
 
-                # Extracción universal por enlaces de producto (-pmpXXXX o -2000XXXX)
                 for a_tag in soup.select("a[href]"):
                     href = a_tag.get("href", "")
                     if not href:
@@ -825,18 +874,17 @@ def buscar_ripley():
                     urls_vistas.add(link_clean)
                     encontrados.append(("Ripley", titulo, link_clean, stock, precio, link_clean, "N/A"))
 
-            # Verifica URLs fijas de Ripley si no salieron en el buscador
             for fixed_url in RIPLEY_URLS_FIJAS:
                 clean_fixed = fixed_url.split("?")[0]
                 if clean_fixed in urls_vistas:
                     continue
                 try:
                     page.goto(clean_fixed, wait_until="domcontentloaded", timeout=20000)
-                    page.wait_for_selector("h1", timeout=8000)
+                    _esperar_carga_ripley(page, timeout_ms=9000)
                     soup = BeautifulSoup(page.content(), "html.parser")
                     h1 = soup.select_one("h1")
                     titulo = h1.get_text(strip=True) if h1 else ""
-                    if not titulo or not es_producto_valido(titulo, clean_fixed):
+                    if not titulo or WAF_TITLES_RE.search(titulo) or not es_producto_valido(titulo, clean_fixed):
                         continue
                     main_txt = (soup.select_one("main") or soup).get_text(" ", strip=True)
                     precios = re.findall(r"S/\s*[\d,]+(?:\.\d{2})?", main_txt)
