@@ -41,6 +41,9 @@ jobs:
       - name: Instalar librerías
         run: pip install -r requirements.txt
 
+      - name: Instalar Chromium para Ripley
+        run: playwright install chromium --with-deps
+
       - name: Restaurar estado (anti-spam y control de reportes)
         uses: actions/cache/restore@v4
         with:
