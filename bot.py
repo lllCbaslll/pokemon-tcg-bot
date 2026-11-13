@@ -32,6 +32,11 @@ try:
 except ImportError:
     sync_playwright = None
 
+try:
+    import playwright_stealth
+except ImportError:
+    playwright_stealth = None
+
 # ---------- Configuración ----------
 WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK", "").strip()
 PROXY_URL = os.getenv("PROXY_URL", "").strip() or None
@@ -166,6 +171,25 @@ def _playwright_proxy_config():
     if parsed.password:
         cfg["password"] = urllib.parse.unquote(parsed.password)
     return cfg
+
+def _aplicar_stealth(page):
+    if playwright_stealth is not None:
+        try:
+            if hasattr(playwright_stealth, "stealth_sync"):
+                playwright_stealth.stealth_sync(page)
+                return
+            if hasattr(playwright_stealth, "Stealth"):
+                playwright_stealth.Stealth().apply_stealth_sync(page)
+                return
+        except Exception:
+            pass
+
+    page.add_init_script("""
+        Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+        Object.defineProperty(navigator, 'languages', { get: () => ['es-PE', 'es', 'en-US', 'en'] });
+        Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+        window.chrome = { runtime: {} };
+    """)
 
 # ---------- Estado persistente ----------
 def load_state():
@@ -755,7 +779,7 @@ def _titulo_desde_slug_ripley(url_clean):
     return slug.replace("-", " ").title()
 
 
-def _esperar_carga_ripley(page, timeout_ms=9000):
+def _esperar_carga_ripley(page, timeout_ms=12000):
     """Espera a que pase la pantalla de verificación de Cloudflare/Akamai si aparece."""
     try:
         page.wait_for_function(
@@ -776,6 +800,7 @@ def _esperar_carga_ripley(page, timeout_ms=9000):
 def buscar_ripley():
     encontrados = []
     urls_vistas = set()
+    bloqueado_waf = False
 
     if sync_playwright is None:
         print("[Ripley] Playwright no está instalado; omitiendo.")
@@ -783,12 +808,14 @@ def buscar_ripley():
 
     try:
         with sync_playwright() as p:
+            usar_headless = not bool(os.getenv("DISPLAY"))
             launch_kwargs = {
-                "headless": True,
+                "headless": usar_headless,
                 "args": [
                     "--disable-blink-features=AutomationControlled",
                     "--no-sandbox",
                     "--disable-dev-shm-usage",
+                    "--window-size=1366,768",
                 ],
             }
             proxy_cfg = _playwright_proxy_config()
@@ -802,10 +829,8 @@ def buscar_ripley():
                 timezone_id="America/Lima",
                 viewport={"width": 1366, "height": 768},
             )
-            context.add_init_script(
-                "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
-            )
             page = context.new_page()
+            _aplicar_stealth(page)
 
             def on_response(response):
                 try:
@@ -823,7 +848,7 @@ def buscar_ripley():
                 search_url = f"https://simple.ripley.com.pe/search/{q}?s=mdco"
                 try:
                     page.goto(search_url, wait_until="domcontentloaded", timeout=25000)
-                    _esperar_carga_ripley(page, timeout_ms=9000)
+                    _esperar_carga_ripley(page, timeout_ms=12000)
                     page.wait_for_timeout(3000)
                     page.evaluate("window.scrollTo(0, document.body.scrollHeight / 2)")
                     page.wait_for_timeout(1500)
@@ -831,6 +856,9 @@ def buscar_ripley():
                     pass
 
                 soup = BeautifulSoup(page.content(), "html.parser")
+                h1_check = soup.select_one("h1")
+                if h1_check and WAF_TITLES_RE.search(h1_check.get_text(strip=True)):
+                    bloqueado_waf = True
 
                 for a_tag in soup.select("a[href]"):
                     href = a_tag.get("href", "")
@@ -880,11 +908,14 @@ def buscar_ripley():
                     continue
                 try:
                     page.goto(clean_fixed, wait_until="domcontentloaded", timeout=20000)
-                    _esperar_carga_ripley(page, timeout_ms=9000)
+                    _esperar_carga_ripley(page, timeout_ms=12000)
                     soup = BeautifulSoup(page.content(), "html.parser")
                     h1 = soup.select_one("h1")
                     titulo = h1.get_text(strip=True) if h1 else ""
-                    if not titulo or WAF_TITLES_RE.search(titulo) or not es_producto_valido(titulo, clean_fixed):
+                    if not titulo or WAF_TITLES_RE.search(titulo):
+                        bloqueado_waf = True
+                        continue
+                    if not es_producto_valido(titulo, clean_fixed):
                         continue
                     main_txt = (soup.select_one("main") or soup).get_text(" ", strip=True)
                     precios = re.findall(r"S/\s*[\d,]+(?:\.\d{2})?", main_txt)
@@ -905,7 +936,11 @@ def buscar_ripley():
     except Exception as e:
         print(f"[Ripley] Error Playwright: {e}")
 
-    print(f"[Ripley] Capturados {len(encontrados)} productos válidos.")
+    if not encontrados and bloqueado_waf:
+        print("[Ripley] ⚠️ Bloqueado por Cloudflare/WAF desde IP de GitHub Actions (configura PROXY_URL para desbloquear).")
+    else:
+        print(f"[Ripley] Capturados {len(encontrados)} productos válidos.")
+
     DEEP_RESULTS_CACHE["Ripley"] = encontrados
     for item in encontrados:
         registrar_producto(*item)
